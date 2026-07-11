@@ -57,7 +57,7 @@ htmlcov/
 .env.*
 
 # Generated workflow outputs (keep folder placeholders)
-2_2_samples_discrete/*
-!2_2_samples_discrete/.gitkeep
-4_dnns/*
-!4_dnns/.gitkeep
+2_samples/*
+!2_samples/.gitkeep
+3_models/*
+!3_models/.gitkeep

@@ -320,7 +320,7 @@ if st.button("Train model", type="primary"):
         meta.grid_shape = list(st.session_state.categorized_2d.shape)
         project_root = Path(__file__).resolve().parents[2]
         append_training_log("Saving model bundle...")
-        model_path = save_model_bundle(model, meta, project_root / "4_dnns", ml_config, train_df)
+        model_path = save_model_bundle(model, meta, project_root / "3_models", ml_config, train_df)
         append_training_log(f"Model saved to {model_path.name}")
 
         st.session_state.model = model

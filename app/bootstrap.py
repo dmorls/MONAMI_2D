@@ -29,7 +29,7 @@ def ensure_default_workflow(project_root: Path) -> None:
         st.session_state._workflow_bootstrapped = True
         return
 
-    default_file = project_root / "0_original_exhaustive" / "porosity_3d.txt"
+    default_file = project_root / "1_original_exhaustive" / "porosity_3d.txt"
     if not default_file.exists():
         st.session_state.bootstrap_status = f"Demo file not found: {default_file}"
         st.session_state._workflow_bootstrapped = True

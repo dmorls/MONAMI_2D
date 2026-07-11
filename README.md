@@ -30,9 +30,9 @@ On startup the app **auto-loads** the demo file (`porosity_3d.txt`), selects **s
 |------|---------|
 | `app/` | Streamlit UI |
 | `monami/` | Core library (I/O, sampling, geostats, ML, visualization) |
-| `0_original_exhaustive/` | Demo exhaustive dataset (`porosity_3d.txt`) |
-| `2_2_samples_discrete/` | Exported sample CSVs (created by the app) |
-| `4_dnns/` | Saved model bundles (`.h5`, metadata, training pool) |
+| `1_original_exhaustive/` | Demo exhaustive dataset (`porosity_3d.txt`) |
+| `2_samples/` | Exported sample CSVs (created by the app) |
+| `3_models/` | Saved model bundles (`.h5`, metadata, training pool) |
 
 ## Data format
 

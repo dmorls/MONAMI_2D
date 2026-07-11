@@ -12,10 +12,10 @@ class WorkflowConfig:
     """Project paths for the MONAMI categorical workflow."""
 
     project_root: Path = field(default_factory=lambda: Path("."))
-    exh_folder: Path = field(default_factory=lambda: Path("0_original_exhaustive"))
+    exh_folder: Path = field(default_factory=lambda: Path("1_original_exhaustive"))
     exh_file: str = "porosity_3d.txt"
-    sample_folder: Path = field(default_factory=lambda: Path("2_2_samples_discrete"))
-    model_folder: Path = field(default_factory=lambda: Path("4_dnns"))
+    sample_folder: Path = field(default_factory=lambda: Path("2_samples"))
+    model_folder: Path = field(default_factory=lambda: Path("3_models"))
 
     def exhaustive_path(self) -> Path:
         return self.project_root / self.exh_folder / self.exh_file

@@ -27,7 +27,7 @@ if workflow_ready() and st.session_state.get("bootstrap_status"):
         )
 
 project_root = Path(__file__).resolve().parents[2]
-default_file = project_root / "0_original_exhaustive" / "porosity_3d.txt"
+default_file = project_root / "1_original_exhaustive" / "porosity_3d.txt"
 
 source_option = st.radio("Data source", ["Default demo file", "Upload file"], horizontal=True)
 

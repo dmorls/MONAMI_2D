@@ -321,7 +321,7 @@ if sampling_ready():
 
     with tab4:
         project_root = Path(__file__).resolve().parents[2]
-        out_dir = project_root / "2_2_samples_discrete"
+        out_dir = project_root / "2_samples"
         out_dir.mkdir(parents=True, exist_ok=True)
         fname = f"sample_all_{n_cat}_{len(samples)}.csv"
         out_path = out_dir / fname

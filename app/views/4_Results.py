@@ -31,7 +31,7 @@ if not sampling_ready():
     st.stop()
 
 project_root = Path(__file__).resolve().parents[2]
-model_dir = project_root / "4_dnns"
+model_dir = project_root / "3_models"
 saved_models = sorted(model_dir.glob("*.h5")) if model_dir.exists() else []
 
 source = st.radio("Model source", ["Current session model", "Load saved model"], horizontal=True)
@@ -49,7 +49,7 @@ if source == "Load saved model" and saved_models:
         st.session_state.neighbor_pool_df = neighbor_pool_df
         st.success(f"Loaded {selected.name}")
 elif source == "Load saved model" and not saved_models:
-    st.info("No saved models in `4_dnns/`. Train a model first.")
+    st.info("No saved models in `3_models/`. Train a model first.")
 elif not training_ready():
     st.warning("Train a model on the **Training** page or load a saved model.")
     st.stop()
