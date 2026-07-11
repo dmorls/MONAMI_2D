@@ -1,4 +1,6 @@
-# MONAMI 2D Categorical Geostatistical Workflow
+# MONAMI 2D
+
+Framework for 2D categorical geostatistical simulations.
 
 Interactive workflow for loading 3D exhaustive property data, discretizing into categories, stratified sampling, training a coordinate-based DNN, and comparing full-grid predictions with truth and samples.
 
@@ -22,23 +24,15 @@ On startup the app **auto-loads** the demo file (`porosity_3d.txt`), selects **s
 | **Training** | Configure DNN, stratified train/test split, train with early stopping |
 | **Results** | Predict full grid, compare maps/histograms, confusion matrix on test set |
 
-## Legacy scripts
+## Project layout
 
-The original scripts still work via a compatibility layer:
-
-```bash
-python monami_2D_use_cate_channels.py
-```
-
-Core logic now lives in the `monami/` package:
-
-- `monami/io.py` — parse file header (`nx*ny*nz`), load 3D volume
-- `monami/transform.py` — categorization, grid ↔ easy format
-- `monami/sampling.py` — stratified random sampling
-- `monami/geostats.py` — categorical indicator variograms (scikit-gstat)
-- `monami/ml.py` — Keras training, metadata-aware prediction
-- `monami/features.py` — MONAMI n-nearest-neighbor feature table (dX, dY, D, V)
-- `monami/viz.py` — Plotly charts for Streamlit
+| Path | Purpose |
+|------|---------|
+| `app/` | Streamlit UI |
+| `monami/` | Core library (I/O, sampling, geostats, ML, visualization) |
+| `0_original_exhaustive/` | Demo exhaustive dataset (`porosity_3d.txt`) |
+| `2_2_samples_discrete/` | Exported sample CSVs (created by the app) |
+| `4_dnns/` | Saved model bundles (`.h5`, metadata, training pool) |
 
 ## Data format
 
