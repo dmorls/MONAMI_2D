@@ -1,0 +1,46 @@
+{
+  "n_classes": 3,
+  "categories": 3,
+  "grid_shape": [
+    130,
+    100
+  ],
+  "nodes_per_layer": [
+    128,
+    128,
+    64,
+    64
+  ],
+  "dropout": 0.2,
+  "optimizer": "adadelta",
+  "loss_function": "categorical_crossentropy",
+  "hidden_activation": "relu",
+  "test_ratio": 0.2,
+  "training_seconds": 12.244086980819702,
+  "model_filename": "3_02_32_1000_02_relu_categorical_crossentropy_adadelta_R0_128_128_64_64",
+  "n_nearest": 64,
+  "feature_dim": 256,
+  "train_sample_count": 120,
+  "train_samples_file": "3_02_32_1000_02_relu_categorical_crossentropy_adadelta_R0_128_128_64_64_train.csv",
+  "neighbor_sample_count": 120,
+  "neighbor_samples_file": "3_02_32_1000_02_relu_categorical_crossentropy_adadelta_R0_128_128_64_64_samples.csv",
+  "out_activation": "softmax",
+  "xy_scale": [
+    100.0,
+    120.0
+  ],
+  "class_to_idx": {
+    "0": 0,
+    "1": 1,
+    "2": 2
+  },
+  "idx_to_class": {
+    "0": 0,
+    "1": 1,
+    "2": 2
+  },
+  "x_max": [
+    100.0,
+    120.0
+  ]
+}

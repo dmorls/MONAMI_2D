@@ -1,0 +1,46 @@
+MONAMI 2D categorical training algorithm
+========================================
+
+Inputs
+------
+- Stratified sample table with columns X, Y, V (1-based grid coordinates and category).
+- Hyperparameter n_nearest (default 10): number of closest samples used as local context.
+
+Train / test split
+------------------
+- Samples are split into a **training set** and a **test (validation) set**.
+- The test set is used **only** for validation during training (loss/accuracy on held-out labels).
+- Test samples are **never** used as neighbors when building feature vectors.
+
+Neighbor pool
+-------------
+- Neighbor lookup uses the **training set only**.
+- At prediction time, the saved training samples from the model bundle are used as the pool.
+
+Feature construction
+--------------------
+For each target point T at (X_T, Y_T):
+
+1. Find the n_nearest closest **training** samples (Euclidean distance in XY).
+2. Exclude T itself when T is in the training pool (distance zero).
+3. For each neighbor i (i = 0 .. n_nearest-1), ordered by increasing distance:
+   - dX_i = X_i - X_T  — normalized relative X offset
+   - dY_i = Y_i - Y_T  — normalized relative Y offset
+   - D_i  = sqrt(dX_i^2 + dY_i^2)  — normalized distance
+   - V_i  — category of neighbor i
+
+Absolute coordinates (neighbor X/Y or target X/Y) are **not** used as DNN inputs.
+
+The DNN input vector has 4 * n_nearest features.
+
+Target
+------
+- V_T: category at the target point (one-hot encoded for training).
+
+Model
+-----
+- Dense neural network with softmax output and categorical crossentropy loss.
+
+Prediction
+----------
+- For each grid cell, build the same neighbor feature vector from the saved **training** sample pool, then run the DNN.

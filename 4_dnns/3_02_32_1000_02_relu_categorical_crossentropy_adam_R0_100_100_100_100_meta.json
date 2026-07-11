@@ -1,0 +1,46 @@
+{
+  "n_classes": 3,
+  "categories": 3,
+  "grid_shape": [
+    130,
+    100
+  ],
+  "nodes_per_layer": [
+    100,
+    100,
+    100,
+    100
+  ],
+  "dropout": 0.2,
+  "optimizer": "adam",
+  "loss_function": "categorical_crossentropy",
+  "hidden_activation": "relu",
+  "test_ratio": 0.2,
+  "training_seconds": 63.224730014801025,
+  "model_filename": "3_02_32_1000_02_relu_categorical_crossentropy_adam_R0_100_100_100_100",
+  "n_nearest": 100,
+  "feature_dim": 400,
+  "train_sample_count": 510,
+  "train_samples_file": "3_02_32_1000_02_relu_categorical_crossentropy_adam_R0_100_100_100_100_train.csv",
+  "neighbor_sample_count": 510,
+  "neighbor_samples_file": "3_02_32_1000_02_relu_categorical_crossentropy_adam_R0_100_100_100_100_samples.csv",
+  "out_activation": "softmax",
+  "xy_scale": [
+    88.0,
+    116.0
+  ],
+  "class_to_idx": {
+    "0": 0,
+    "1": 1,
+    "2": 2
+  },
+  "idx_to_class": {
+    "0": 0,
+    "1": 1,
+    "2": 2
+  },
+  "x_max": [
+    88.0,
+    116.0
+  ]
+}
