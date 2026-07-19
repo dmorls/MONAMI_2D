@@ -7,7 +7,11 @@ from pathlib import Path
 import streamlit as st
 
 from app.invalidation import commit_sampling_fingerprint, make_sampling_fingerprint
+from app.invalidation import commit_algorithm_fingerprint, make_algorithm_fingerprint
+from monami.algorithms.registry import DEFAULT_ALGORITHM_ID
+from monami.config import MLConfig
 from monami.io import extract_slice, load_from_path_or_bytes
+from monami.ml import split_samples
 from monami.sampling import sample_fraction_to_strata, stratified_sample_dataframe
 from monami.transform import categorize_slice, compute_thresholds, thresholds_to_text
 
@@ -92,11 +96,6 @@ def ensure_default_workflow(project_root: Path) -> None:
         st.session_state.n_categories_effective = len(applied_edges) - 1
         st.session_state.categories = len(applied_edges) - 1
 
-        st.session_state.bootstrap_status = (
-            f"Loaded {default_file.name} (level {DEFAULT_LEVEL}), "
-            f"{st.session_state.categories} categories, "
-            f"{len(samples):,} samples (~{DEFAULT_SAMPLE_PCT}% density)."
-        )
         commit_sampling_fingerprint(
             make_sampling_fingerprint(
                 selected_level=DEFAULT_LEVEL,
@@ -113,6 +112,23 @@ def ensure_default_workflow(project_root: Path) -> None:
         )
         st.session_state._sampling_vmin = float(v_data.min())
         st.session_state._sampling_vmax = float(v_data.max())
+
+        train_pool, _ = split_samples(samples, 0.2, seed=st.session_state.random_seed)
+        max_neighbors = max(1, len(train_pool) - 1)
+        n_nearest = min(MLConfig().n_nearest, max_neighbors)
+        algo_config = {"n_nearest": int(n_nearest)}
+        st.session_state.selected_algorithm_id = DEFAULT_ALGORITHM_ID
+        st.session_state.algorithm_config = algo_config
+        commit_algorithm_fingerprint(
+            make_algorithm_fingerprint(DEFAULT_ALGORITHM_ID, algo_config)
+        )
+
+        st.session_state.bootstrap_status = (
+            f"Loaded {default_file.name} (level {DEFAULT_LEVEL}), "
+            f"{st.session_state.categories} categories, "
+            f"{len(samples):,} samples (~{DEFAULT_SAMPLE_PCT}% density). "
+            f"Algorithm: MONAMI neighbor DNN (n={n_nearest})."
+        )
     except Exception as exc:
         st.session_state.bootstrap_status = f"Auto-bootstrap failed: {exc}"
 

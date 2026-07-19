@@ -61,3 +61,5 @@ htmlcov/
 !2_samples/.gitkeep
 3_models/*
 !3_models/.gitkeep
+4_reports/*
+!4_reports/.gitkeep

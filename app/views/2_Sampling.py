@@ -233,19 +233,37 @@ if sampling_ready():
     tab1, tab2, tab3, tab4 = st.tabs(["Maps", "Histogram", "Variograms", "Export"])
 
     with tab1:
+        # Side-by-side panels share width/margins/colorbar so map areas match.
+        _pair_width = 420
         c1, c2 = st.columns(2)
         with c1:
             st.plotly_chart(
-                heatmap_slice(categorized, title="Categorized slice", zmin=0, zmax=n_cat - 1),
+                heatmap_slice(
+                    categorized,
+                    title="Categorized slice",
+                    max_width=_pair_width,
+                    n_categories=n_cat,
+                ),
                 use_container_width=False,
             )
         with c2:
             st.plotly_chart(
-                sample_scatter(samples, title="Sample locations", grid_shape=categorized.shape),
+                sample_scatter(
+                    samples,
+                    title="Sample locations",
+                    grid_shape=categorized.shape,
+                    max_width=_pair_width,
+                    n_categories=n_cat,
+                ),
                 use_container_width=False,
             )
         st.plotly_chart(
-            sample_overlay_on_slice(categorized, samples, title="Samples overlaid on categorized slice"),
+            sample_overlay_on_slice(
+                categorized,
+                samples,
+                title="Samples overlaid on categorized slice",
+                n_categories=n_cat,
+            ),
             use_container_width=False,
         )
         st.caption(f"Thresholds used: `{thresholds_to_text(stored_edges)}`")

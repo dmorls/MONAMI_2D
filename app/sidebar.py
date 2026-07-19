@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import streamlit as st
 
-from app.state import results_ready, sampling_ready, training_ready, workflow_ready
+from app.state import (
+    algorithm_ready,
+    results_ready,
+    sampling_ready,
+    training_ready,
+    workflow_ready,
+)
 
 
 def inject_sidebar_nav_styles() -> None:
@@ -12,6 +18,7 @@ def inject_sidebar_nav_styles() -> None:
     readiness = [
         workflow_ready(),
         sampling_ready(),
+        algorithm_ready(),
         training_ready(),
         results_ready(),
     ]
@@ -33,5 +40,5 @@ def render_bootstrap_caption() -> None:
         return
     if "failed" in bootstrap_status.lower() or "not found" in bootstrap_status.lower():
         st.sidebar.warning(bootstrap_status)
-    elif workflow_ready() and sampling_ready():
+    elif workflow_ready() and sampling_ready() and algorithm_ready():
         st.sidebar.caption(bootstrap_status)

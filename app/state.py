@@ -8,11 +8,13 @@ import streamlit as st
 
 from app.bootstrap import ensure_default_workflow
 from app.invalidation import (
+    algorithm_is_committed,
     migrate_legacy_fingerprints,
     results_is_committed,
     sampling_is_committed,
     training_is_committed,
 )
+from monami.algorithms.registry import DEFAULT_ALGORITHM_ID, resolve_algorithm_id
 
 
 def init_session_state() -> None:
@@ -38,15 +40,24 @@ def init_session_state() -> None:
         "history": None,
         "live_training_history": None,
         "training_log": [],
+        "training_preview_frames": [],
+        "training_preview_gif": None,
+        "training_preview_last_metrics": None,
         "prediction_2d": None,
+        "simulations": [],
+        "last_report_path": None,
         "property_name": "porosity",
         "source_name": "porosity_3d.txt",
         "random_seed": 42,
         "sample_pct": 5.0,
+        "selected_algorithm_id": DEFAULT_ALGORITHM_ID,
+        "algorithm_config": {},
         "_workflow_bootstrapped": False,
         "bootstrap_status": None,
         "_committed_sampling_fingerprint": None,
         "_current_sampling_fingerprint": None,
+        "_committed_algorithm_fingerprint": None,
+        "_current_algorithm_fingerprint": None,
         "_committed_training_fingerprint": None,
         "_current_training_fingerprint": None,
         "_sampling_vmin": None,
@@ -55,6 +66,12 @@ def init_session_state() -> None:
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+    # Migrate pre-numbering algorithm ids still sitting in the session.
+    if st.session_state.get("selected_algorithm_id"):
+        st.session_state.selected_algorithm_id = resolve_algorithm_id(
+            st.session_state.selected_algorithm_id
+        )
 
     project_root = Path(__file__).resolve().parent.parent
     ensure_default_workflow(project_root)
@@ -67,6 +84,10 @@ def workflow_ready() -> bool:
 
 def sampling_ready() -> bool:
     return sampling_is_committed()
+
+
+def algorithm_ready() -> bool:
+    return algorithm_is_committed()
 
 
 def training_ready() -> bool:

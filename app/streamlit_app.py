@@ -11,6 +11,7 @@ import streamlit as st
 
 from app.sidebar import inject_sidebar_nav_styles, render_bootstrap_caption
 from app.state import (
+    algorithm_ready,
     init_session_state,
     page_title,
     results_ready,
@@ -41,12 +42,17 @@ pages = [
         icon=":material/grid_on:",
     ),
     st.Page(
-        "views/3_Training.py",
+        "views/3_Algorithm.py",
+        title=page_title("Algorithm", algorithm_ready()),
+        icon=":material/functions:",
+    ),
+    st.Page(
+        "views/4_Training.py",
         title=page_title("Training", training_ready()),
         icon=":material/model_training:",
     ),
     st.Page(
-        "views/4_Results.py",
+        "views/5_Results.py",
         title=page_title("Results", results_ready()),
         icon=":material/analytics:",
     ),

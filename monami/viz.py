@@ -13,6 +13,63 @@ from sklearn.metrics import confusion_matrix
 
 SPATIAL_MAX_WIDTH = 650
 
+# Shared colorbar geometry so side-by-side spatial plots keep equal map panels.
+_SPATIAL_COLORBAR = dict(title="Value", thickness=14, len=0.8, x=1.02, xpad=4)
+_SPATIAL_MARGIN = dict(l=60, r=70, t=50, b=50)
+
+# Qualitative palette for discrete categories (cycled if n is large).
+_CATEGORY_PALETTE = (
+    list(px.colors.qualitative.Plotly)
+    + list(px.colors.qualitative.Dark24)
+    + list(px.colors.qualitative.Safe)
+)
+
+
+def categorical_colorscale(n_categories: int) -> list:
+    """Piecewise-constant Plotly colorscale with one color per category."""
+    n = max(int(n_categories), 1)
+    scale: list = []
+    for i in range(n):
+        color = _CATEGORY_PALETTE[i % len(_CATEGORY_PALETTE)]
+        lo = i / n
+        hi = (i + 1) / n
+        scale.append([lo, color])
+        scale.append([hi, color])
+    return scale
+
+
+def category_color_bounds(n_categories: int) -> tuple[float, float]:
+    """zmin/zmax so integer categories sit in discrete color bins."""
+    n = max(int(n_categories), 1)
+    return -0.5, n - 0.5
+
+
+def category_colorbar(n_categories: int, title: str = "Category") -> dict:
+    n = max(int(n_categories), 1)
+    ticks = list(range(n))
+    bar = dict(_SPATIAL_COLORBAR)
+    bar.update(
+        title=title,
+        tickmode="array",
+        tickvals=ticks,
+        ticktext=[str(t) for t in ticks],
+    )
+    return bar
+
+
+def _resolve_category_style(
+    n_categories: Optional[int],
+    zmin: Optional[float],
+    zmax: Optional[float],
+    colorscale: str = "Jet",
+):
+    """Return (colorscale, zmin, zmax, colorbar) for continuous or discrete maps."""
+    if n_categories is not None and int(n_categories) > 0:
+        n = int(n_categories)
+        cmin, cmax = category_color_bounds(n)
+        return categorical_colorscale(n), cmin, cmax, category_colorbar(n)
+    return colorscale, zmin, zmax, dict(_SPATIAL_COLORBAR)
+
 
 def _grid_layout_dims(n_rows: int, n_cols: int, max_width: int = SPATIAL_MAX_WIDTH) -> tuple[int, int, float]:
     """Return fixed width, height, and y/x scale ratio for square grid cells."""
@@ -46,15 +103,18 @@ def _apply_subplot_grid_aspect(
     x_ref, _ = _subplot_axis_ref(row, col, n_cols_panels)
     fig.update_xaxes(
         range=[0.5, n_cols + 0.5],
+        autorange=False,
         title_text="Column (X)" if col == 1 else "",
         constrain="domain",
         row=row,
         col=col,
     )
+    # Fixed high→low range (no autorange="reversed"): scatter subplots otherwise
+    # ignore range and pad to nice ticks, shrinking the panel vs heatmaps.
     fig.update_yaxes(
         range=[n_rows + 0.5, 0.5],
+        autorange=False,
         title_text="Row (Y)" if col == 1 else "",
-        autorange="reversed",
         scaleanchor=x_ref,
         scaleratio=scaleratio,
         constrain="domain",
@@ -71,21 +131,35 @@ def _apply_grid_aspect(
     row: Optional[int] = None,
     col: Optional[int] = None,
     n_cols_panels: int = 1,
+    max_width: int = SPATIAL_MAX_WIDTH,
 ) -> go.Figure:
     """Lock heatmap/scatter spatial axes so cells stay square when rendered."""
-    width, height, scaleratio = _grid_layout_dims(n_rows, n_cols)
+    width, height, scaleratio = _grid_layout_dims(n_rows, n_cols, max_width=max_width)
     if row is not None and col is not None:
         _apply_subplot_grid_aspect(fig, n_rows, n_cols, row, col, n_cols_panels=n_cols_panels)
     else:
-        xaxis = dict(constrain="domain", range=[0.5, n_cols + 0.5])
+        xaxis = dict(
+            constrain="domain",
+            range=[0.5, n_cols + 0.5],
+            autorange=False,
+            domain=[0.0, 1.0],
+        )
         yaxis = dict(
-            autorange="reversed",
+            autorange=False,
             scaleanchor="x",
             scaleratio=scaleratio,
             constrain="domain",
             range=[n_rows + 0.5, 0.5],
+            domain=[0.0, 1.0],
         )
-        fig.update_layout(width=width, height=height, autosize=False, xaxis=xaxis, yaxis=yaxis)
+        fig.update_layout(
+            width=width,
+            height=height,
+            autosize=False,
+            margin=_SPATIAL_MARGIN,
+            xaxis=xaxis,
+            yaxis=yaxis,
+        )
     return fig
 
 
@@ -95,16 +169,21 @@ def heatmap_slice(
     zmin: Optional[float] = None,
     zmax: Optional[float] = None,
     colorscale: str = "Jet",
+    max_width: int = SPATIAL_MAX_WIDTH,
+    n_categories: Optional[int] = None,
 ) -> go.Figure:
-    """Interactive heatmap of a 2D array."""
+    """Interactive heatmap of a 2D array (discrete categories when ``n_categories`` set)."""
     n_rows, n_cols = array_2d.shape
+    cs, z0, z1, cbar = _resolve_category_style(n_categories, zmin, zmax, colorscale)
     fig = go.Figure(
         data=go.Heatmap(
             z=array_2d,
-            colorscale=colorscale,
-            zmin=zmin,
-            zmax=zmax,
-            colorbar=dict(title="Value"),
+            x=list(range(1, n_cols + 1)),
+            y=list(range(1, n_rows + 1)),
+            colorscale=cs,
+            zmin=z0,
+            zmax=z1,
+            colorbar=cbar,
         )
     )
     fig.update_layout(
@@ -112,7 +191,7 @@ def heatmap_slice(
         xaxis_title="Column (X)",
         yaxis_title="Row (Y)",
     )
-    return _apply_grid_aspect(fig, n_rows, n_cols)
+    return _apply_grid_aspect(fig, n_rows, n_cols, max_width=max_width)
 
 
 def slice_gallery(volume: np.ndarray, levels: List[int], title_prefix: str = "Level") -> go.Figure:
@@ -198,35 +277,56 @@ def sample_scatter(
     title: str = "Sample locations",
     size: int = 8,
     grid_shape: Optional[tuple[int, int]] = None,
+    max_width: int = SPATIAL_MAX_WIDTH,
+    zmin: Optional[float] = None,
+    zmax: Optional[float] = None,
+    n_categories: Optional[int] = None,
 ) -> go.Figure:
-    """Scatter plot of sample points colored by value."""
-    fig = px.scatter(
-        samples_df,
-        x="X",
-        y="Y",
-        color=value_col,
-        color_continuous_scale="Jet",
-        title=title,
-        size_max=size,
-    )
-    fig.update_traces(marker=dict(size=size))
+    """Scatter plot of sample points colored by value (matched layout to heatmaps)."""
     if grid_shape is not None:
         n_rows, n_cols = grid_shape
     else:
         n_rows = int(samples_df["Y"].max()) if len(samples_df) else 1
         n_cols = int(samples_df["X"].max()) if len(samples_df) else 1
-    fig.update_xaxes(range=[0.5, n_cols + 0.5])
-    fig.update_yaxes(range=[n_rows + 0.5, 0.5])
-    return _apply_grid_aspect(fig, n_rows, n_cols)
+    values = samples_df[value_col]
+    cs, cmin, cmax, cbar = _resolve_category_style(
+        n_categories,
+        float(values.min()) if zmin is None else float(zmin),
+        float(values.max()) if zmax is None else float(zmax),
+    )
+    fig = go.Figure(
+        data=go.Scatter(
+            x=samples_df["X"],
+            y=samples_df["Y"],
+            mode="markers",
+            marker=dict(
+                size=size,
+                color=values,
+                colorscale=cs,
+                cmin=cmin,
+                cmax=cmax,
+                colorbar=cbar,
+                line=dict(width=0.5, color="black"),
+            ),
+            showlegend=False,
+        )
+    )
+    fig.update_layout(
+        title=title,
+        xaxis_title="Column (X)",
+        yaxis_title="Row (Y)",
+    )
+    return _apply_grid_aspect(fig, n_rows, n_cols, max_width=max_width)
 
 
 def sample_overlay_on_slice(
     slice_2d: np.ndarray,
     samples_df: pd.DataFrame,
     title: str = "Samples on slice",
+    n_categories: Optional[int] = None,
 ) -> go.Figure:
     """Heatmap with sample points overlaid."""
-    fig = heatmap_slice(slice_2d, title=title)
+    fig = heatmap_slice(slice_2d, title=title, n_categories=n_categories)
     fig.add_trace(
         go.Scatter(
             x=samples_df["X"] - 1,
@@ -315,10 +415,12 @@ def comparison_heatmaps(
     truth: np.ndarray,
     prediction: np.ndarray,
     title: str = "Truth vs prediction",
+    n_categories: Optional[int] = None,
 ) -> go.Figure:
     """Side-by-side truth and prediction maps."""
-    vmin = min(truth.min(), prediction.min())
-    vmax = max(truth.max(), prediction.max())
+    if n_categories is None:
+        n_categories = int(max(truth.max(), prediction.max())) + 1
+    cs, vmin, vmax, cbar = _resolve_category_style(n_categories, None, None)
     n_rows, n_cols = truth.shape
     x_coords = list(range(1, n_cols + 1))
     y_coords = list(range(1, n_rows + 1))
@@ -330,10 +432,11 @@ def comparison_heatmaps(
                 z=data,
                 x=x_coords,
                 y=y_coords,
-                colorscale="Jet",
+                colorscale=cs,
                 zmin=vmin,
                 zmax=vmax,
                 showscale=(col == 2),
+                colorbar=cbar if col == 2 else None,
                 name=name,
             ),
             row=1,
@@ -350,10 +453,17 @@ def exhaustive_sample_prediction_maps(
     samples_df: pd.DataFrame,
     prediction: np.ndarray,
     title: str = "Exhaustive vs samples vs prediction",
+    n_categories: Optional[int] = None,
 ) -> go.Figure:
-    """Three-panel map: exhaustive field, colored samples, and prediction."""
-    vmin = min(truth.min(), prediction.min(), samples_df["V"].min())
-    vmax = max(truth.max(), prediction.max(), samples_df["V"].max())
+    """Three-panel map: exhaustive field, colored samples, and prediction.
+
+    All panels share the same axis ranges, panel size, and discrete category colors.
+    """
+    if n_categories is None:
+        n_categories = int(
+            max(truth.max(), prediction.max(), samples_df["V"].max())
+        ) + 1
+    cs, vmin, vmax, cbar = _resolve_category_style(int(n_categories), None, None)
     n_rows, n_cols = truth.shape
     x_coords = list(range(1, n_cols + 1))
     y_coords = list(range(1, n_rows + 1))
@@ -369,7 +479,7 @@ def exhaustive_sample_prediction_maps(
             z=truth,
             x=x_coords,
             y=y_coords,
-            colorscale="Jet",
+            colorscale=cs,
             zmin=vmin,
             zmax=vmax,
             showscale=False,
@@ -386,10 +496,11 @@ def exhaustive_sample_prediction_maps(
             marker=dict(
                 size=9,
                 color=samples_df["V"],
-                colorscale="Jet",
+                colorscale=cs,
                 cmin=vmin,
                 cmax=vmax,
                 line=dict(width=0.5, color="black"),
+                showscale=False,
             ),
             name="Samples",
         ),
@@ -401,11 +512,11 @@ def exhaustive_sample_prediction_maps(
             z=prediction,
             x=x_coords,
             y=y_coords,
-            colorscale="Jet",
+            colorscale=cs,
             zmin=vmin,
             zmax=vmax,
             showscale=True,
-            colorbar=dict(title="Value"),
+            colorbar=cbar,
             name="Prediction",
         ),
         row=1,
@@ -415,9 +526,129 @@ def exhaustive_sample_prediction_maps(
         _apply_subplot_grid_aspect(
             fig, n_rows, n_cols, 1, col, n_cols_panels=3, panel_max_width=panel_width
         )
+        fig.update_xaxes(range=[0.5, n_cols + 0.5], autorange=False, row=1, col=col)
+        fig.update_yaxes(range=[n_rows + 0.5, 0.5], autorange=False, row=1, col=col)
     _, panel_height, _ = _grid_layout_dims(n_rows, n_cols, max_width=panel_width)
     fig.update_layout(title=title, width=panel_width * 3 + 90, height=panel_height + 90, autosize=False)
     return fig
+
+
+def _jet_rgb(value: float, vmin: float, vmax: float) -> tuple[int, int, int]:
+    """Approximate Plotly Jet colormap for a normalized value."""
+    if vmax <= vmin:
+        t = 0.5
+    else:
+        t = max(0.0, min(1.0, (float(value) - vmin) / (vmax - vmin)))
+    if t < 0.125:
+        r, g, b = 0, 0, 0.5 + 4.0 * t
+    elif t < 0.375:
+        r, g, b = 0, 4.0 * (t - 0.125), 1.0
+    elif t < 0.625:
+        r, g, b = 4.0 * (t - 0.375), 1.0, 1.0 - 4.0 * (t - 0.375)
+    elif t < 0.875:
+        r, g, b = 1.0, 1.0 - 4.0 * (t - 0.625), 0
+    else:
+        r, g, b = 1.0 - 4.0 * (t - 0.875), 0, 0
+    return int(r * 255), int(g * 255), int(b * 255)
+
+
+def _array_to_rgb_image(array: np.ndarray, vmin: float, vmax: float, scale: int = 6) -> "Image.Image":
+    from PIL import Image
+
+    rows, cols = array.shape
+    pixels = np.zeros((rows, cols, 3), dtype=np.uint8)
+    for r in range(rows):
+        for c in range(cols):
+            pixels[r, c] = _jet_rgb(array[r, c], vmin, vmax)
+    img = Image.fromarray(pixels, mode="RGB")
+    if scale > 1:
+        try:
+            resample = Image.Resampling.NEAREST
+        except AttributeError:
+            resample = Image.NEAREST
+        img = img.resize((cols * scale, rows * scale), resample)
+    return img
+
+
+def preview_maps_to_png(
+    truth: np.ndarray,
+    samples_df: pd.DataFrame,
+    prediction: np.ndarray,
+    epoch: int,
+    total_epochs: int,
+    n_categories: Optional[int] = None,
+) -> bytes:
+    """Rasterize the three-panel preview figure to PNG bytes."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    if n_categories is None:
+        n_categories = int(max(truth.max(), prediction.max(), samples_df["V"].max())) + 1
+    fig = exhaustive_sample_prediction_maps(
+        truth,
+        samples_df,
+        prediction,
+        title=f"Exhaustive / samples / prediction — epoch {epoch}/{total_epochs}",
+        n_categories=int(n_categories),
+    )
+    try:
+        return fig.to_image(format="png", scale=1)
+    except Exception:
+        vmin = float(min(truth.min(), prediction.min(), samples_df["V"].min()))
+        vmax = float(max(truth.max(), prediction.max(), samples_df["V"].max()))
+        scale = 5
+        truth_img = _array_to_rgb_image(truth, vmin, vmax, scale=scale)
+        pred_img = _array_to_rgb_image(prediction, vmin, vmax, scale=scale)
+        sample_img = truth_img.copy()
+        draw = ImageDraw.Draw(sample_img)
+        radius = max(2, scale // 2)
+        for _, row in samples_df.iterrows():
+            x = int((float(row["X"]) - 1) * scale + scale // 2)
+            y = int((float(row["Y"]) - 1) * scale + scale // 2)
+            color = _jet_rgb(float(row["V"]), vmin, vmax)
+            draw.ellipse(
+                (x - radius, y - radius, x + radius, y + radius),
+                fill=color,
+                outline=(0, 0, 0),
+            )
+        panel_h = truth_img.height
+        panel_w = truth_img.width
+        title_h = 28
+        canvas = Image.new("RGB", (panel_w * 3 + 20, panel_h + title_h), (255, 255, 255))
+        canvas.paste(truth_img, (0, title_h))
+        canvas.paste(sample_img, (panel_w + 10, title_h))
+        canvas.paste(pred_img, (panel_w * 2 + 20, title_h))
+        draw = ImageDraw.Draw(canvas)
+        draw.text((4, 4), f"Epoch {epoch}/{total_epochs}", fill=(0, 0, 0))
+        draw.text((0, title_h - 14), "Truth", fill=(0, 0, 0))
+        draw.text((panel_w + 10, title_h - 14), "Samples", fill=(0, 0, 0))
+        draw.text((panel_w * 2 + 20, title_h - 14), "Prediction", fill=(0, 0, 0))
+        out = io.BytesIO()
+        canvas.save(out, format="PNG")
+        return out.getvalue()
+
+
+def assemble_gif_from_png_frames(png_frames: Sequence[bytes], duration_ms: int = 500) -> bytes:
+    """Combine PNG frames into an animated GIF."""
+    import io
+
+    from PIL import Image
+
+    if not png_frames:
+        return b""
+    images = [Image.open(io.BytesIO(frame)).convert("RGB") for frame in png_frames]
+    out = io.BytesIO()
+    images[0].save(
+        out,
+        format="GIF",
+        save_all=True,
+        append_images=images[1:],
+        duration=duration_ms,
+        loop=0,
+        disposal=2,
+    )
+    return out.getvalue()
 
 
 def difference_map(
@@ -444,6 +675,94 @@ def overlaid_histograms(
     if vrange:
         fig.update_layout(xaxis_range=list(vrange))
     fig.update_layout(barmode="overlay", title=title, height=400)
+    return fig
+
+
+def _category_proportions(values, categories: Sequence[int]) -> list[float]:
+    arr = np.asarray(values).ravel()
+    n = max(len(arr), 1)
+    return [float(np.sum(arr == cat)) / n for cat in categories]
+
+
+def category_proportion_comparison(
+    truth: np.ndarray,
+    training_samples,
+    prediction: np.ndarray,
+    n_categories: int,
+    title: str = "Category proportions",
+    prediction_label: str = "Prediction",
+) -> go.Figure:
+    """
+    Grouped bar chart of category proportions for exhaustive truth,
+    training samples, and a prediction / simulation field.
+
+    Bars use the same discrete category colors as the spatial maps; series are
+    distinguished by fill pattern. Layout is forced light for reliable PDF export.
+    """
+    cats = list(range(int(n_categories)))
+    if isinstance(training_samples, pd.DataFrame):
+        train_vals = training_samples["V"].to_numpy()
+    else:
+        train_vals = np.asarray(training_samples).ravel()
+
+    truth_p = _category_proportions(truth, cats)
+    train_p = _category_proportions(train_vals, cats)
+    pred_p = _category_proportions(prediction, cats)
+    labels = [str(c) for c in cats]
+    cat_colors = [_CATEGORY_PALETTE[c % len(_CATEGORY_PALETTE)] for c in cats]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            name="Exhaustive",
+            x=labels,
+            y=truth_p,
+            text=[f"{p:.1%}" for p in truth_p],
+            textposition="auto",
+            marker=dict(color=cat_colors, line=dict(width=0.5, color="#333333")),
+        )
+    )
+    fig.add_trace(
+        go.Bar(
+            name="Training samples",
+            x=labels,
+            y=train_p,
+            text=[f"{p:.1%}" for p in train_p],
+            textposition="auto",
+            marker=dict(
+                color=cat_colors,
+                pattern_shape="/",
+                line=dict(width=0.5, color="#333333"),
+            ),
+        )
+    )
+    fig.add_trace(
+        go.Bar(
+            name=prediction_label,
+            x=labels,
+            y=pred_p,
+            text=[f"{p:.1%}" for p in pred_p],
+            textposition="auto",
+            marker=dict(
+                color=cat_colors,
+                pattern_shape="x",
+                line=dict(width=0.5, color="#333333"),
+            ),
+        )
+    )
+    fig.update_layout(
+        template="plotly_white",
+        paper_bgcolor="white",
+        plot_bgcolor="white",
+        font=dict(color="#222222"),
+        barmode="group",
+        title=title,
+        xaxis_title="Category",
+        yaxis_title="Proportion",
+        yaxis=dict(range=[0, 1], tickformat=".0%"),
+        height=420,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+    )
     return fig
 
 

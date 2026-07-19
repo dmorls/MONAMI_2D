@@ -6,3 +6,6 @@ streamlit>=1.36
 scikit-gstat>=1.0
 scikit-learn>=1.3
 tensorflow>=2.19.1,<2.20
+pillow>=9.0
+reportlab>=4.0
+# Optional: pip install kaleido  (higher-quality preview PNGs; PIL fallback works without it)
