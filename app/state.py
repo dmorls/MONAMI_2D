@@ -44,6 +44,7 @@ def init_session_state() -> None:
         "training_preview_gif": None,
         "training_preview_last_metrics": None,
         "prediction_2d": None,
+        "prediction_statistics": None,
         "simulations": [],
         "last_report_path": None,
         "property_name": "porosity",

@@ -9,6 +9,7 @@ from scipy.spatial import cKDTree
 # Direction, distance, and neighbor category only — no absolute X/Y coordinates.
 NEIGHBOR_FIELDS = ("dX", "dY", "D", "V")
 FEATURES_PER_NEIGHBOR = len(NEIGHBOR_FIELDS)
+ABSOLUTE_XY_DIM = 2
 
 
 def feature_names(n_nearest: int) -> list[str]:
@@ -22,6 +23,28 @@ def feature_names(n_nearest: int) -> list[str]:
 
 def feature_dim(n_nearest: int) -> int:
     return n_nearest * FEATURES_PER_NEIGHBOR
+
+
+def hybrid_feature_names(n_nearest: int) -> list[str]:
+    """Column names for absolute XY prepended to neighbor features."""
+    return ["X", "Y"] + feature_names(n_nearest)
+
+
+def hybrid_feature_dim(n_nearest: int) -> int:
+    return ABSOLUTE_XY_DIM + feature_dim(n_nearest)
+
+
+def absolute_xy_features(
+    target_xy: np.ndarray,
+    xy_scale: np.ndarray,
+) -> np.ndarray:
+    """Normalize absolute target coordinates (same scaling as Absolute Position)."""
+    target_xy = np.asarray(target_xy, dtype=float)
+    if target_xy.ndim == 1:
+        target_xy = target_xy.reshape(1, 2)
+    scale = np.asarray(xy_scale, dtype=float).ravel()
+    scale = np.where(scale == 0, 1.0, scale)
+    return target_xy / scale
 
 
 def compute_xy_scale(neighbor_df: pd.DataFrame) -> np.ndarray:
@@ -44,6 +67,7 @@ def build_feature_row(
     n_nearest: int,
     exclude_self: bool = False,
     xy_scale: np.ndarray | None = None,
+    include_target_xy: bool = False,
 ) -> np.ndarray:
     """Build one MONAMI feature row for a single target point."""
     matrix = build_feature_matrix_from_targets(
@@ -52,6 +76,7 @@ def build_feature_row(
         n_nearest,
         exclude_self=exclude_self,
         xy_scale=xy_scale,
+        include_target_xy=include_target_xy,
     )
     return matrix[0]
 
@@ -62,11 +87,13 @@ def build_feature_matrix_from_targets(
     n_nearest: int,
     exclude_self: bool = False,
     xy_scale: np.ndarray | None = None,
+    include_target_xy: bool = False,
 ) -> np.ndarray:
     """
     Build MONAMI features for many target points.
 
-    ``target_xy`` shape: (N, 2). Returns shape (N, 4 * n_nearest).
+    ``target_xy`` shape: (N, 2). Returns shape (N, 4 * n_nearest), or
+    (N, 2 + 4 * n_nearest) when ``include_target_xy`` is True.
     """
     _require_columns(neighbor_df)
     if len(neighbor_df) <= n_nearest and exclude_self:
@@ -130,6 +157,9 @@ def build_feature_matrix_from_targets(
             out[i, base + 2] = d[j] / dist_scale
             out[i, base + 3] = v[j]
 
+    if include_target_xy:
+        abs_xy = absolute_xy_features(target_xy, xy_scale)
+        out = np.concatenate([abs_xy, out], axis=1)
     return out
 
 
@@ -139,6 +169,7 @@ def build_feature_matrix(
     n_nearest: int,
     exclude_self: bool = False,
     xy_scale: np.ndarray | None = None,
+    include_target_xy: bool = False,
 ) -> np.ndarray:
     """Build feature matrix for rows in ``targets_df`` using ``neighbor_df`` as pool."""
     _require_columns(targets_df)
@@ -149,6 +180,7 @@ def build_feature_matrix(
         n_nearest,
         exclude_self=exclude_self,
         xy_scale=xy_scale,
+        include_target_xy=include_target_xy,
     )
 
 
@@ -157,6 +189,7 @@ def build_training_matrix(
     test_df: pd.DataFrame,
     neighbor_pool_df: pd.DataFrame,
     n_nearest: int,
+    include_target_xy: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str], np.ndarray]:
     """Build train/test feature matrices and category targets."""
     xy_scale = compute_xy_scale(neighbor_pool_df)
@@ -166,6 +199,7 @@ def build_training_matrix(
         n_nearest,
         exclude_self=True,
         xy_scale=xy_scale,
+        include_target_xy=include_target_xy,
     )
     y_train = train_df["V"].astype(int).to_numpy()
     x_test = build_feature_matrix(
@@ -174,7 +208,12 @@ def build_training_matrix(
         n_nearest,
         exclude_self=False,
         xy_scale=xy_scale,
+        include_target_xy=include_target_xy,
     )
     y_test = test_df["V"].astype(int).to_numpy()
-    names = feature_names(n_nearest)
+    names = (
+        hybrid_feature_names(n_nearest)
+        if include_target_xy
+        else feature_names(n_nearest)
+    )
     return x_train, y_train, x_test, y_test, names, xy_scale

@@ -17,6 +17,7 @@ from monami.features import (
     build_training_matrix,
     compute_xy_scale,
     feature_dim,
+    hybrid_feature_dim,
 )
 from monami.ml import ModelMeta, split_samples
 from monami.simulation import sequential_simulate_grid
@@ -83,6 +84,8 @@ def _build_prediction_features(
     target_xy: np.ndarray,
     meta: ModelMeta,
     neighbor_pool_df: pd.DataFrame,
+    *,
+    include_target_xy: bool = False,
 ) -> np.ndarray:
     xy_scale = meta.xy_scale_array()
     if xy_scale is None:
@@ -94,6 +97,7 @@ def _build_prediction_features(
         int(n_nearest),
         exclude_self=False,
         xy_scale=xy_scale,
+        include_target_xy=include_target_xy,
     )
 
 
@@ -101,6 +105,8 @@ class MonamiDNNAlgorithm(Algorithm):
     id = "2_Relative_Position"
     name = "Relative Position"
     description = "Neighbor DNN: dX, dY, D, V from the n nearest training samples."
+    # When True (Hybrid Position subclass), prepend normalized absolute X, Y.
+    include_target_xy = False
     long_description = """
 ### Relative Position — MONAMI neighbor DNN
 
@@ -166,7 +172,40 @@ See the expandable specification below for the full feature definition.
 
     def feature_summary(self, algo_config: Dict[str, Any]) -> str:
         n = _n_nearest(algo_config)
-        return f"MONAMI input dimension: {4 * n} features (dX, dY, D, V × {n} neighbors)"
+        if self.include_target_xy:
+            return (
+                f"Hybrid input dimension: {hybrid_feature_dim(n)} features "
+                f"(X, Y + dX, dY, D, V × {n} neighbors)"
+            )
+        return f"MONAMI input dimension: {feature_dim(n)} features (dX, dY, D, V × {n} neighbors)"
+
+    def prediction_description(self) -> str:
+        if self.include_target_xy:
+            return (
+                "Argmax of the DNN softmax at every cell. Hybrid features combine "
+                "normalized absolute (X, Y) with relative-position neighbors from the "
+                "saved training-sample pool."
+            )
+        return (
+            "Argmax of the DNN softmax at every cell. Relative-position neighbor "
+            "features use the saved training-sample pool."
+        )
+
+    def simulation_description(self) -> str:
+        if self.include_target_xy:
+            return (
+                "Random sequential path with training samples pinned. Hybrid features "
+                "use normalized absolute (X, Y) plus relative neighbors from the growing "
+                "hard-plus-simulated conditioning pool. A sample-proportion servo "
+                "(Results page strength) gently steers each realization toward the "
+                "training-sample histogram."
+            )
+        return (
+            "Random sequential path with training samples pinned. Relative-position "
+            "features use the growing hard-plus-simulated conditioning pool. A "
+            "sample-proportion servo (Results page strength) gently steers each "
+            "realization toward the training-sample histogram."
+        )
 
     def validate_config(
         self,
@@ -212,13 +251,24 @@ See the expandable specification below for the full feature definition.
                 f"neighbor pool={len(neighbor_pool_df)} train samples, n_nearest={n_nearest}",
             )
             x_train, y_train_raw, x_test, y_test_raw, _, xy_scale = build_training_matrix(
-                train_df, test_df, neighbor_pool_df, n_nearest
+                train_df,
+                test_df,
+                neighbor_pool_df,
+                n_nearest,
+                include_target_xy=self.include_target_xy,
             )
             input_dim = x_train.shape[1]
-            _training_log(
-                log_callback,
-                f"Feature dimension: {input_dim} (4×{n_nearest}: dX, dY, D, V per neighbor)",
-            )
+            if self.include_target_xy:
+                feat_msg = (
+                    f"Feature dimension: {input_dim} "
+                    f"(X, Y + 4×{n_nearest}: dX, dY, D, V per neighbor)"
+                )
+            else:
+                feat_msg = (
+                    f"Feature dimension: {input_dim} "
+                    f"(4×{n_nearest}: dX, dY, D, V per neighbor)"
+                )
+            _training_log(log_callback, feat_msg)
 
             classes = sorted(int(c) for c in set(y_train_raw) | set(y_test_raw))
             n_classes = len(classes)
@@ -449,7 +499,12 @@ See the expandable specification below for the full feature definition.
         template = np.zeros((rows, cols))
         easy = numpy2d_to_easyformat(template)
         target_xy = easy[:, :2].astype(float)
-        features = _build_prediction_features(target_xy, meta, neighbor_pool_df)
+        features = _build_prediction_features(
+            target_xy,
+            meta,
+            neighbor_pool_df,
+            include_target_xy=self.include_target_xy,
+        )
         proba = model.predict(features, verbose=0)
         class_indices = np.argmax(proba, axis=1)
         mapped = meta.map_indices_to_classes(class_indices)
@@ -466,6 +521,7 @@ See the expandable specification below for the full feature definition.
             points_df[["X", "Y"]].to_numpy(dtype=float),
             meta,
             neighbor_pool_df,
+            include_target_xy=self.include_target_xy,
         )
         proba = model.predict(features, verbose=0)
         class_indices = np.argmax(proba, axis=1)
@@ -480,6 +536,7 @@ See the expandable specification below for the full feature definition.
         *,
         seed: int,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        correction_strength: float = 0.5,
     ) -> np.ndarray:
         return sequential_simulate_grid(
             model,
@@ -488,4 +545,6 @@ See the expandable specification below for the full feature definition.
             grid_shape,
             seed=seed,
             progress_callback=progress_callback,
+            include_target_xy=self.include_target_xy,
+            correction_strength=float(correction_strength),
         )

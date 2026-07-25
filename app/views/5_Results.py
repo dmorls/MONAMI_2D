@@ -9,17 +9,15 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import streamlit as st
-from sklearn.metrics import classification_report
 
 from app.state import init_session_state, sampling_ready, training_ready
-from monami.algorithms.registry import get_algorithm, uses_relative_position
+from monami.algorithms.registry import get_algorithm
+from monami.geostats import corrected_sis_validation_metrics
 from monami.ml import load_model_bundle, load_neighbor_pool
 from monami.report import ReportContext, generate_report, sanitize_version
 from monami.viz import (
     category_proportion_comparison,
-    confusion_matrix_plot,
     exhaustive_sample_prediction_maps,
-    observed_vs_predicted_scatter,
 )
 
 init_session_state()
@@ -32,7 +30,60 @@ if not sampling_ready():
 
 project_root = Path(__file__).resolve().parents[2]
 model_dir = project_root / "3_models"
-saved_models = sorted(model_dir.glob("*.h5")) if model_dir.exists() else []
+saved_models = (
+    sorted(
+        list(model_dir.glob("*.h5"))
+        + [
+            path
+            for path in model_dir.glob("*.json")
+            if not path.name.endswith("_meta.json")
+        ]
+    )
+    if model_dir.exists()
+    else []
+)
+
+
+def _bundle_compatibility_error(bundle_meta, pool_df):
+    """Reject bundles that do not belong to the active sampled workflow."""
+    active_truth = st.session_state.categorized_2d
+    active_samples = st.session_state.samples_df
+    expected_shape = tuple(active_truth.shape)
+    saved_shape = tuple(int(v) for v in (bundle_meta.grid_shape or []))
+    if saved_shape and saved_shape != expected_shape:
+        return (
+            f"Saved grid shape {saved_shape} does not match the active grid "
+            f"{expected_shape}."
+        )
+    active_categories = int(
+        st.session_state.get("n_categories_effective")
+        or st.session_state.categories
+    )
+    if int(bundle_meta.n_classes) != active_categories:
+        return (
+            f"Saved model has {bundle_meta.n_classes} categories, but the active "
+            f"workflow has {active_categories}."
+        )
+    rows, cols = expected_shape
+    x = pool_df["X"].to_numpy(dtype=int)
+    y = pool_df["Y"].to_numpy(dtype=int)
+    if ((x < 1) | (x > cols) | (y < 1) | (y > rows)).any():
+        return "Saved conditioning coordinates fall outside the active grid."
+    active_rows = {
+        (int(row.X), int(row.Y), int(row.V))
+        for row in active_samples[["X", "Y", "V"]].itertuples(index=False)
+    }
+    saved_rows = {
+        (int(row.X), int(row.Y), int(row.V))
+        for row in pool_df[["X", "Y", "V"]].itertuples(index=False)
+    }
+    if not saved_rows.issubset(active_rows):
+        return (
+            "Saved conditioning samples do not match the active sampling run. "
+            "Restore the matching sample configuration or fit a new model."
+        )
+    return None
+
 
 source = st.radio("Model source", ["Current session model", "Load saved model"], horizontal=True)
 
@@ -42,15 +93,24 @@ meta = st.session_state.model_meta
 if source == "Load saved model" and saved_models:
     selected = st.selectbox("Saved models", saved_models, format_func=lambda p: p.name)
     if st.button("Load selected model"):
-        model, meta, neighbor_pool_df = load_model_bundle(selected)
-        st.session_state.model = model
-        st.session_state.model_meta = meta
-        st.session_state.model_path = str(selected)
-        st.session_state.neighbor_pool_df = neighbor_pool_df
-        st.session_state.selected_algorithm_id = meta.algorithm_id
-        st.session_state.algorithm_config = dict(meta.algorithm_config or {})
-        st.session_state.simulations = []
-        st.success(f"Loaded {selected.name}")
+        loaded_model, loaded_meta, loaded_pool = load_model_bundle(selected)
+        compatibility_error = _bundle_compatibility_error(loaded_meta, loaded_pool)
+        if compatibility_error:
+            st.error(f"Cannot load `{selected.name}`: {compatibility_error}")
+        else:
+            model, meta, neighbor_pool_df = loaded_model, loaded_meta, loaded_pool
+            st.session_state.model = model
+            st.session_state.model_meta = meta
+            st.session_state.model_path = str(selected)
+            st.session_state.neighbor_pool_df = neighbor_pool_df
+            st.session_state.train_df = neighbor_pool_df.copy()
+            st.session_state.test_df = None
+            st.session_state.selected_algorithm_id = meta.algorithm_id
+            st.session_state.algorithm_config = dict(meta.algorithm_config or {})
+            st.session_state.prediction_2d = None
+            st.session_state.prediction_statistics = None
+            st.session_state.simulations = []
+            st.success(f"Loaded {selected.name}")
 elif source == "Load saved model" and not saved_models:
     st.info("No saved models in `3_models/`. Train a model first.")
 elif not training_ready():
@@ -86,7 +146,25 @@ if hard_df is None or len(hard_df) == 0:
 st.caption(f"Algorithm: **{algorithm.name}** (`{meta.algorithm_id}`)")
 
 
-def _render_field_block(grid, title: str, prediction_label: str) -> None:
+def _statistical_metrics(grid, seed: int = 42):
+    if getattr(meta, "model_type", "keras") != "corrected_sis":
+        return None
+    return corrected_sis_validation_metrics(
+        grid,
+        hard_df,
+        model,
+        seed=int(seed),
+    )
+
+
+def _render_field_block(
+    grid,
+    title: str,
+    prediction_label: str,
+    *,
+    statistics=None,
+    seed: int = 42,
+) -> None:
     """Show field maps, then category proportions (exhaustive / training / prediction)."""
     st.plotly_chart(
         exhaustive_sample_prediction_maps(
@@ -109,26 +187,40 @@ def _render_field_block(grid, title: str, prediction_label: str) -> None:
         ),
         use_container_width=True,
     )
+    metrics = statistics if statistics is not None else _statistical_metrics(grid, seed=seed)
+    if metrics is not None:
+        st.caption("Sample-derived statistical fidelity (exhaustive truth is not used)")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Hard-data fidelity", f"{metrics['hard_data_fidelity']:.1%}")
+        m2.metric("Proportion L1", f"{metrics['proportion_l1']:.4f}")
+        m3.metric("Proportion RMSE", f"{metrics['proportion_rmse']:.4f}")
+        vrmse = metrics["variogram_rmse_mean"]
+        m4.metric("Indicator variogram RMSE", f"{vrmse:.4f}" if vrmse >= 0 else "n/a")
+        tx = metrics["transition_error_x"]
+        ty = metrics["transition_error_y"]
+        tx_text = f"{tx:.4f}" if tx >= 0 else "n/a"
+        ty_text = f"{ty:.4f}" if ty >= 0 else "n/a"
+        lag_x = int(metrics.get("transition_lag_x", 1))
+        lag_y = int(metrics.get("transition_lag_y", 1))
+        st.caption(
+            "Directional transition error (lower is better): "
+            f"X lag {lag_x} = {tx_text} · Y lag {lag_y} = {ty_text}"
+        )
 
 
 # --- Most-likely prediction ---
 st.subheader("Most-likely prediction")
-if uses_relative_position(algorithm.id):
-    st.caption(
-        "Argmax of the DNN softmax at every cell (deterministic). "
-        "Neighbor features use the **training samples** pool."
-    )
-else:
-    st.caption(
-        "Argmax of the DNN softmax at every cell (deterministic). "
-        "Features are normalized **X, Y** at each cell."
-    )
+st.caption(algorithm.prediction_description())
 if st.button("Run full-grid prediction", type="primary"):
     with st.spinner("Predicting..."):
         start = time.time()
         prediction = algorithm.predict_grid(model, grid_shape, meta, hard_df)
         elapsed = time.time() - start
         st.session_state.prediction_2d = prediction
+        st.session_state.prediction_statistics = _statistical_metrics(
+            prediction,
+            seed=int(st.session_state.random_seed),
+        )
     st.success(f"Prediction completed in {elapsed:.2f}s")
 
 if st.session_state.prediction_2d is not None:
@@ -136,24 +228,17 @@ if st.session_state.prediction_2d is not None:
         st.session_state.prediction_2d,
         title="Exhaustive vs samples vs prediction",
         prediction_label="Prediction (most likely)",
+        statistics=st.session_state.get("prediction_statistics"),
+        seed=int(st.session_state.random_seed),
     )
 
 # --- Sequential simulation ---
 st.subheader("Sequential simulation")
-if uses_relative_position(algorithm.id):
-    st.caption(
-        "Classic sequential path over unsampled cells. Hard data = **training samples**. "
-        "At each cell, relative-position neighbor features use the growing conditioning pool; "
-        "a category is sampled from the DNN softmax. "
-        "Each realization is shown as soon as it finishes (maps, then category proportions)."
-    )
-else:
-    st.caption(
-        "Classic sequential path over unsampled cells. Hard data = **training samples**. "
-        "At each cell, features are that cell's normalized **X, Y**; "
-        "a category is sampled from the DNN softmax. "
-        "Each realization is shown as soon as it finishes (maps, then category proportions)."
-    )
+st.caption(
+    algorithm.simulation_description()
+    + " Each realization is shown as soon as it finishes."
+)
+is_dnn_sim = getattr(meta, "model_type", "keras") != "corrected_sis"
 c1, c2 = st.columns(2)
 with c1:
     n_realizations = st.number_input(
@@ -173,25 +258,54 @@ with c2:
         help="Realization i uses seed = base + i − 1.",
     )
 
+sim_correction_strength = 0.5
+if is_dnn_sim:
+    sim_correction_strength = st.slider(
+        "Sample-proportion correction",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.5,
+        step=0.05,
+        help=(
+            "Blend local DNN probabilities with the remaining training-sample "
+            "histogram quota at each sequential draw. 0 = pure DNN softmax; "
+            "1 = hard quota. Recommended: 0.50."
+        ),
+        key="dnn_sim_correction_strength",
+    )
+
 progress = st.progress(0.0, text="Waiting to run sequential simulation...")
 status = st.empty()
 live_gallery = st.container()
 
 run_sims = st.button("Run sequential simulation")
 
+
+def _sim_caption(sim: dict) -> str:
+    parts = [f"Seed = {sim['seed']}"]
+    if sim.get("elapsed") is not None:
+        parts.append(f"finished in {float(sim['elapsed']):.1f}s")
+    if sim.get("correction_strength") is not None and is_dnn_sim:
+        parts.append(f"proportion correction = {float(sim['correction_strength']):.2f}")
+    return " · ".join(parts)
+
+
 if run_sims:
     sims = list(st.session_state.get("simulations") or [])
     start_all = time.time()
     n_real = int(n_realizations)
+    strength = float(sim_correction_strength)
 
     with live_gallery:
         for sim in sims:
             st.markdown(f"### {sim['label']}")
-            st.caption(f"Seed = {sim['seed']}")
+            st.caption(_sim_caption(sim))
             _render_field_block(
                 sim["grid"],
                 title=f"Exhaustive vs samples vs {sim['label']}",
                 prediction_label=sim["label"],
+                statistics=sim.get("statistics"),
+                seed=int(sim["seed"]),
             )
 
     for r in range(n_real):
@@ -215,19 +329,29 @@ if run_sims:
             grid_shape,
             seed=seed,
             progress_callback=_on_progress,
+            correction_strength=strength,
         )
         elapsed = time.time() - t0
-        entry = {"label": label, "grid": grid, "seed": seed}
+        entry = {
+            "label": label,
+            "grid": grid,
+            "seed": seed,
+            "elapsed": elapsed,
+            "correction_strength": strength if is_dnn_sim else None,
+            "statistics": _statistical_metrics(grid, seed=seed),
+        }
         sims.append(entry)
         st.session_state.simulations = list(sims)
 
         with live_gallery:
             st.markdown(f"### {label}")
-            st.caption(f"Seed = {seed} · finished in {elapsed:.1f}s")
+            st.caption(_sim_caption(entry))
             _render_field_block(
                 grid,
                 title=f"Exhaustive vs samples vs {label}",
                 prediction_label=label,
+                statistics=entry.get("statistics"),
+                seed=seed,
             )
         status.success(f"{label} finished in {elapsed:.1f}s (seed={seed})")
 
@@ -242,11 +366,13 @@ else:
         st.markdown("#### Stored realizations")
         for sim in simulations:
             st.markdown(f"### {sim['label']}")
-            st.caption(f"Seed = {sim['seed']}")
+            st.caption(_sim_caption(sim))
             _render_field_block(
                 sim["grid"],
                 title=f"Exhaustive vs samples vs {sim['label']}",
                 prediction_label=sim["label"],
+                statistics=sim.get("statistics"),
+                seed=int(sim["seed"]),
             )
 
 simulations = st.session_state.get("simulations") or []
@@ -255,20 +381,14 @@ if not has_prediction and not simulations:
     st.info("Run a full-grid prediction and/or sequential simulation to view results.")
     st.stop()
 
-# --- Metrics (most-likely prediction) ---
-st.subheader("Test-set metrics")
-st.caption("Confusion matrix and scores use the most-likely (argmax) prediction only.")
-
-if has_prediction and test_df is not None and len(test_df) > 0:
-    y_true = test_df["V"].astype(int).to_numpy()
-    y_pred = algorithm.evaluate_at_points(model, meta, test_df, hard_df).astype(int)
-    st.plotly_chart(confusion_matrix_plot(y_true, y_pred), use_container_width=True)
-    st.plotly_chart(observed_vs_predicted_scatter(y_true, y_pred), use_container_width=True)
-    st.text(classification_report(y_true, y_pred))
-elif has_prediction:
-    st.info("No test split available. Train a model to generate test metrics.")
-else:
-    st.info("Run full-grid prediction to view test-set metrics.")
+is_statistical = getattr(meta, "model_type", "keras") == "corrected_sis"
+if is_statistical:
+    st.subheader("Statistical validation")
+    st.caption(
+        "Corrected SIS uses all samples as hard data. Sample-derived statistical "
+        "metrics are shown with each prediction/realization; exhaustive maps remain "
+        "an independent visual validation."
+    )
 
 view_options = []
 if has_prediction:
@@ -296,7 +416,7 @@ st.download_button(
 st.subheader("Export report")
 st.caption(
     "Generate a shareable PDF covering the full workflow (data, sampling, algorithm, training, "
-    "results, and metrics). Saved under `4_reports/` as `Monami_<version>_<timestamp>.pdf`."
+    "and results). Saved under `4_reports/` as `Monami_<version>_<timestamp>.pdf`."
 )
 
 report_version = st.text_input(
@@ -313,24 +433,17 @@ if gen_report:
     except ValueError as exc:
         st.error(str(exc))
     else:
-        y_true_test = None
-        y_pred_test = None
-        clf_text = ""
-        if has_prediction and test_df is not None and len(test_df) > 0:
-            y_true_test = test_df["V"].astype(int).to_numpy()
-            y_pred_test = algorithm.evaluate_at_points(model, meta, test_df, hard_df).astype(int)
-            clf_text = classification_report(y_true_test, y_pred_test)
-
         # Best-effort stop-criteria summary from model meta / defaults
         stop_summary = ""
         try:
             # Reconstruct a lightweight view if session retained last MLConfig fields via meta only
-            stop_summary = (
-                f"algorithm={meta.algorithm_id}; "
-                f"test_ratio={meta.test_ratio}; "
-                f"layers={list(meta.nodes_per_layer)}; "
-                f"dropout={meta.dropout}; optimizer={meta.optimizer}"
-            )
+            if getattr(meta, "model_type", "keras") == "keras":
+                stop_summary = (
+                    f"algorithm={meta.algorithm_id}; "
+                    f"test_ratio={meta.test_ratio}; "
+                    f"layers={list(meta.nodes_per_layer)}; "
+                    f"dropout={meta.dropout}; optimizer={meta.optimizer}"
+                )
         except Exception:
             stop_summary = ""
 
@@ -354,13 +467,16 @@ if gen_report:
             algorithm_long_description=getattr(algorithm, "long_description", "") or "",
             algorithm_config=dict(meta.algorithm_config or {}),
             meta=meta,
+            prediction_description=algorithm.prediction_description(),
+            simulation_description=algorithm.simulation_description(),
+            statistical_model=(
+                model.to_dict() if hasattr(model, "to_dict") else {}
+            ),
             prediction_2d=st.session_state.prediction_2d,
+            prediction_statistics=st.session_state.get("prediction_statistics"),
             simulations=list(simulations),
             history=st.session_state.get("history"),
             live_training_history=st.session_state.get("live_training_history"),
-            y_true_test=y_true_test,
-            y_pred_test=y_pred_test,
-            classification_report_text=clf_text,
             model_path=str(st.session_state.get("model_path") or ""),
             stop_criteria_summary=stop_summary,
         )

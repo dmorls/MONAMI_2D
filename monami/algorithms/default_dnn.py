@@ -91,6 +91,20 @@ Use this algorithm as a transparent reference against relative-position / neighb
     def feature_summary(self, algo_config: Dict[str, Any]) -> str:
         return "Absolute Position input dimension: 2 features (X, Y)"
 
+    def prediction_description(self) -> str:
+        return (
+            "Argmax of the DNN softmax at every cell. Features are normalized "
+            "absolute X and Y coordinates."
+        )
+
+    def simulation_description(self) -> str:
+        return (
+            "Random sequential path with training samples pinned. Each cell draws "
+            "from the coordinate-DNN softmax; simulated values are not model inputs. "
+            "A sample-proportion servo (Results page strength) gently steers each "
+            "realization toward the training-sample histogram."
+        )
+
     def train(
         self,
         train_df: pd.DataFrame,
@@ -368,6 +382,7 @@ Use this algorithm as a transparent reference against relative-position / neighb
         *,
         seed: int,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        correction_strength: float = 0.5,
     ) -> np.ndarray:
         return sequential_simulate_coord_grid(
             model,
@@ -376,4 +391,5 @@ Use this algorithm as a transparent reference against relative-position / neighb
             grid_shape,
             seed=seed,
             progress_callback=progress_callback,
+            correction_strength=float(correction_strength),
         )

@@ -113,13 +113,29 @@ class Algorithm(ABC):
         *,
         seed: int,
         progress_callback: Optional[Callable[[int, int], None]] = None,
+        correction_strength: float = 0.5,
     ) -> np.ndarray:
-        """Sequential categorical simulation for the full grid."""
+        """Sequential categorical simulation for the full grid.
+
+        ``correction_strength`` steers DNN draws toward sample proportions.
+        Statistical algorithms may ignore it and use their own fitted setting.
+        """
         raise NotImplementedError(f"{self.id} does not support sequential simulation")
 
     def feature_summary(self, algo_config: Dict[str, Any]) -> str:
         """Optional one-line summary for the Training page."""
         return ""
+
+    def prediction_description(self) -> str:
+        """User-facing explanation of deterministic grid prediction."""
+        return "Deterministic full-grid category estimate from the fitted model."
+
+    def simulation_description(self) -> str:
+        """User-facing explanation of sequential simulation."""
+        return (
+            "Sequential categorical simulation over unsampled cells with hard "
+            "conditioning data pinned."
+        )
 
     def validate_config(
         self,

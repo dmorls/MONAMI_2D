@@ -17,7 +17,12 @@ from monami.features import feature_dim
 
 DEFAULT_ALGORITHM_ID = "2_Relative_Position"
 _RELATIVE_ALGORITHM_IDS = frozenset(
-    {"2_Relative_Position", "2_Monami_NN", "monami_dnn"}
+    {
+        "2_Relative_Position",
+        "2_Monami_NN",
+        "monami_dnn",
+        "4_Hybrid_Position",
+    }
 )
 
 
@@ -49,6 +54,7 @@ class ModelMeta:
     x_max: List[float] = field(default_factory=list)
     algorithm_id: str = DEFAULT_ALGORITHM_ID
     algorithm_config: Dict[str, Any] = field(default_factory=dict)
+    model_type: str = "keras"
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,6 +81,7 @@ class ModelMeta:
         data.setdefault("out_activation", "softmax")
         data.setdefault("x_max", data.get("xy_scale", []))
         data.setdefault("algorithm_id", DEFAULT_ALGORITHM_ID)
+        data.setdefault("model_type", "keras")
         # Normalize legacy algorithm ids stored in older bundles.
         legacy = {
             "default": "1_Absolute_Position",
@@ -158,6 +165,9 @@ def _import_tensorflow():
 
 
 def _build_model_filename(ml_config: MLConfig, meta: ModelMeta) -> str:
+    if meta.model_type == "corrected_sis":
+        suffix = str(ml_config.suffix or "SIS").strip() or "SIS"
+        return f"ccsis_{meta.categories}cat_{meta.train_sample_count}samples_{suffix}"
     ratio = str(ml_config.test_ratio).replace(".", "")
     dropout = str(ml_config.dropout).replace(".", "")
     nodes = "_".join(str(n) for n in ml_config.nodes_per_layer)
@@ -176,16 +186,30 @@ def save_model_bundle(
     train_df: pd.DataFrame,
     neighbor_pool_df: Optional[pd.DataFrame] = None,
 ) -> Path:
-    """Save .h5 model, metadata JSON, train CSV, and neighbor-pool CSV."""
+    """Save a Keras or statistical model bundle plus metadata/sample CSVs."""
     if neighbor_pool_df is None:
         neighbor_pool_df = train_df
     folder.mkdir(parents=True, exist_ok=True)
     filename = _build_model_filename(ml_config, meta)
+    candidate = filename
+    version = 2
+    extension = ".json" if meta.model_type == "corrected_sis" else ".h5"
+    while (folder / f"{candidate}{extension}").exists():
+        candidate = f"{filename}_{version}"
+        version += 1
+    filename = candidate
     meta.model_filename = filename
-    model_path = folder / f"{filename}.h5"
+    model_path = folder / f"{filename}{extension}"
     train_path = folder / f"{filename}_train.csv"
     neighbor_path = folder / f"{filename}_samples.csv"
-    model.save(model_path)
+    if meta.model_type == "corrected_sis":
+        from monami.sis import CorrectedSISModel
+
+        if not isinstance(model, CorrectedSISModel):
+            raise TypeError("corrected_sis bundles require a CorrectedSISModel")
+        model_path.write_text(json.dumps(model.to_dict(), indent=2))
+    else:
+        model.save(model_path)
     train_df.to_csv(train_path, index=False)
     neighbor_pool_df.to_csv(neighbor_path, index=False)
     meta.train_samples_file = train_path.name
@@ -198,11 +222,16 @@ def save_model_bundle(
 
 def load_model_bundle(model_path: Path) -> tuple:
     """Load model, metadata, and neighbor pool from a model bundle."""
-    _import_tensorflow()
-    from tensorflow.keras.models import load_model
-
-    model = load_model(model_path)
     meta_path = model_path.with_name(model_path.stem + "_meta.json")
     meta = ModelMeta.load(meta_path)
+    if meta.model_type == "corrected_sis":
+        from monami.sis import CorrectedSISModel
+
+        model = CorrectedSISModel.from_dict(json.loads(model_path.read_text()))
+    else:
+        _import_tensorflow()
+        from tensorflow.keras.models import load_model
+
+        model = load_model(model_path)
     neighbor_pool_df = load_neighbor_pool(model_path, meta)
     return model, meta, neighbor_pool_df

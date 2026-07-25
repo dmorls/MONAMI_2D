@@ -85,6 +85,7 @@ def clear_training_state() -> None:
 
 def clear_results_state() -> None:
     st.session_state.prediction_2d = None
+    st.session_state.prediction_statistics = None
     st.session_state.simulations = []
 
 

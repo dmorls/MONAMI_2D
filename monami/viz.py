@@ -13,6 +13,23 @@ from sklearn.metrics import confusion_matrix
 
 SPATIAL_MAX_WIDTH = 650
 
+# Live-training preview layout matches exhaustive_sample_prediction_maps (280px panels).
+LIVE_PANEL_WIDTH = 280
+LIVE_PREVIEW_GUTTER = 18
+LIVE_PREVIEW_MARGIN = 15
+LIVE_PREVIEW_TITLE_H = 52
+LIVE_HISTORY_WIDTH = 900
+LIVE_HISTORY_HEIGHT = 360
+
+
+def live_preview_canvas_size(grid_shape: tuple[int, int]) -> tuple[int, int]:
+    """Return (width, height) for the three-panel live preview PNG for a grid shape."""
+    n_rows, n_cols = grid_shape
+    _, panel_h, _ = _grid_layout_dims(n_rows, n_cols, max_width=LIVE_PANEL_WIDTH)
+    canvas_w = LIVE_PANEL_WIDTH * 3 + LIVE_PREVIEW_GUTTER * 2 + LIVE_PREVIEW_MARGIN * 2
+    canvas_h = LIVE_PREVIEW_TITLE_H + panel_h + 12
+    return int(canvas_w), int(panel_h + LIVE_PREVIEW_TITLE_H + 12)
+
 # Shared colorbar geometry so side-by-side spatial plots keep equal map panels.
 _SPATIAL_COLORBAR = dict(title="Value", thickness=14, len=0.8, x=1.02, xpad=4)
 _SPATIAL_MARGIN = dict(l=60, r=70, t=50, b=50)
@@ -407,8 +424,112 @@ def training_history_live_plot(
     if val_loss:
         fig.add_trace(go.Scatter(x=list(range(1, len(val_loss) + 1)), y=val_loss, name="Val loss", mode="lines+markers"), row=1, col=2)
     fig.update_yaxes(range=[0, 1], row=1, col=1)
-    fig.update_layout(title=title, height=420, showlegend=True)
+    fig.update_layout(
+        title=title,
+        width=LIVE_HISTORY_WIDTH,
+        height=LIVE_HISTORY_HEIGHT,
+        autosize=False,
+        showlegend=True,
+        margin=dict(l=40, r=20, t=50, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+    )
     return fig
+
+
+def live_curves_placeholder_png(
+    width: int = LIVE_HISTORY_WIDTH,
+    height: int = LIVE_HISTORY_HEIGHT,
+) -> bytes:
+    """Fixed-size placeholder for the live accuracy/loss panel."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (int(width), int(height)), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.text((8, 6), "Training history", fill=(20, 20, 20))
+    draw.text((8, int(height) // 2 - 6), "Waiting for first epoch...", fill=(120, 120, 120))
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def _draw_series_line(
+    draw,
+    panel_x: int,
+    panel_w: int,
+    top: int,
+    bottom: int,
+    series: List[float],
+    color: tuple,
+    y_min: float,
+    y_max: float,
+) -> None:
+    if not series:
+        return
+    if len(series) == 1:
+        pts = [series[0], series[0]]
+    else:
+        pts = series
+    span = max(y_max - y_min, 1e-9)
+    n = len(pts)
+    coords = []
+    for i, val in enumerate(pts):
+        x = panel_x + 2 + int(i / max(n - 1, 1) * max(panel_w - 4, 1))
+        y = bottom - int((float(val) - y_min) / span * max(bottom - top, 1))
+        coords.append((x, y))
+    if len(coords) >= 2:
+        draw.line(coords, fill=color, width=2)
+
+
+def training_history_live_png(
+    metrics: Dict[str, List[float]],
+    *,
+    width: int = LIVE_HISTORY_WIDTH,
+    height: int = LIVE_HISTORY_HEIGHT,
+    current_epoch: Optional[int] = None,
+    total_epochs: Optional[int] = None,
+) -> bytes:
+    """Fast fixed-size PIL chart for live training (no Plotly remount flicker)."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    acc = list(metrics.get("accuracy") or [])
+    val_acc = list(metrics.get("val_accuracy") or [])
+    loss = list(metrics.get("loss") or [])
+    val_loss = list(metrics.get("val_loss") or [])
+
+    img = Image.new("RGB", (int(width), int(height)), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    title = "Training history"
+    if current_epoch is not None and total_epochs is not None:
+        title = f"Training history - epoch {current_epoch}/{total_epochs}"
+    draw.text((8, 6), title, fill=(20, 20, 20))
+
+    top = 36
+    bottom = int(height) - 24
+    mid_x = int(width) // 2
+    gutter = 16
+    left_x = 8
+    left_w = mid_x - gutter - left_x
+    right_x = mid_x + gutter // 2
+    right_w = int(width) - right_x - 8
+
+    draw.text((left_x, top - 14), "Accuracy (train / val)", fill=(80, 80, 80))
+    draw.rectangle((left_x, top, left_x + left_w, bottom), outline=(210, 210, 210))
+    _draw_series_line(draw, left_x, left_w, top, bottom, acc, (31, 119, 180), 0.0, 1.0)
+    _draw_series_line(draw, left_x, left_w, top, bottom, val_acc, (214, 39, 40), 0.0, 1.0)
+
+    loss_max = max([*loss, *val_loss, 0.01]) * 1.1
+    draw.text((right_x, top - 14), "Loss (train / val)", fill=(80, 80, 80))
+    draw.rectangle((right_x, top, right_x + right_w, bottom), outline=(210, 210, 210))
+    _draw_series_line(draw, right_x, right_w, top, bottom, loss, (31, 119, 180), 0.0, loss_max)
+    _draw_series_line(draw, right_x, right_w, top, bottom, val_loss, (214, 39, 40), 0.0, loss_max)
+
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
 
 
 def comparison_heatmaps(
@@ -533,6 +654,194 @@ def exhaustive_sample_prediction_maps(
     return fig
 
 
+def report_cover_overview_maps(
+    truth: np.ndarray,
+    samples_df: pd.DataFrame,
+    prediction: Optional[np.ndarray] = None,
+    simulation: Optional[np.ndarray] = None,
+    simulation_label: str = "Simulation",
+    n_categories: Optional[int] = None,
+    title: str = "Overview",
+) -> go.Figure:
+    """Cover-page overview: exhaustive, samples, optional prediction, optional simulation."""
+    arrays = [truth, samples_df["V"].to_numpy()]
+    if prediction is not None:
+        arrays.append(prediction)
+    if simulation is not None:
+        arrays.append(simulation)
+    if n_categories is None:
+        n_categories = int(max(float(np.max(a)) for a in arrays)) + 1
+    cs, vmin, vmax, cbar = _resolve_category_style(int(n_categories), None, None)
+    n_rows, n_cols = truth.shape
+    x_coords = list(range(1, n_cols + 1))
+    y_coords = list(range(1, n_rows + 1))
+
+    panels: List[tuple[str, str, Optional[np.ndarray]]] = [
+        ("Exhaustive (truth)", "heatmap", truth),
+        ("Samples", "samples", None),
+    ]
+    if prediction is not None:
+        panels.append(("Prediction", "heatmap", prediction))
+    if simulation is not None:
+        panels.append((simulation_label, "heatmap", simulation))
+
+    n_panels = len(panels)
+    use_grid = n_panels == 4
+    n_fig_rows = 2 if use_grid else 1
+    n_fig_cols = 2 if use_grid else n_panels
+    panel_width = 240 if use_grid else (280 if n_panels <= 3 else 200)
+
+    fig = make_subplots(
+        rows=n_fig_rows,
+        cols=n_fig_cols,
+        subplot_titles=[p[0] for p in panels],
+        horizontal_spacing=0.08 if use_grid else 0.06,
+        vertical_spacing=0.12 if use_grid else 0.08,
+    )
+
+    for idx, (_label, kind, array) in enumerate(panels):
+        row = (idx // n_fig_cols) + 1
+        col = (idx % n_fig_cols) + 1
+        showscale = idx == n_panels - 1
+        if kind == "samples":
+            fig.add_trace(
+                go.Scatter(
+                    x=samples_df["X"],
+                    y=samples_df["Y"],
+                    mode="markers",
+                    marker=dict(
+                        size=8 if use_grid else 9,
+                        color=samples_df["V"],
+                        colorscale=cs,
+                        cmin=vmin,
+                        cmax=vmax,
+                        line=dict(width=0.5, color="black"),
+                        showscale=False,
+                    ),
+                    name="Samples",
+                    showlegend=False,
+                ),
+                row=row,
+                col=col,
+            )
+        else:
+            fig.add_trace(
+                go.Heatmap(
+                    z=array,
+                    x=x_coords,
+                    y=y_coords,
+                    colorscale=cs,
+                    zmin=vmin,
+                    zmax=vmax,
+                    showscale=showscale,
+                    colorbar=cbar if showscale else None,
+                    name=_label,
+                ),
+                row=row,
+                col=col,
+            )
+        _apply_subplot_grid_aspect(
+            fig,
+            n_rows,
+            n_cols,
+            row,
+            col,
+            n_cols_panels=n_fig_cols,
+            panel_max_width=panel_width,
+        )
+
+    _, panel_height, _ = _grid_layout_dims(n_rows, n_cols, max_width=panel_width)
+    fig_w = panel_width * n_fig_cols + (70 if use_grid else 90)
+    fig_h = panel_height * n_fig_rows + (110 if use_grid else 90)
+    fig.update_layout(
+        title=title,
+        width=fig_w,
+        height=fig_h,
+        autosize=False,
+        margin=dict(l=40, r=60, t=60, b=30),
+    )
+    return fig
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    h = str(hex_color).lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def _category_rgb(value: float, n_categories: int) -> tuple[int, int, int]:
+    """Discrete category color matching Plotly categorical maps."""
+    n = max(int(n_categories), 1)
+    cat = int(round(float(value)))
+    cat = max(0, min(n - 1, cat))
+    return _hex_to_rgb(_CATEGORY_PALETTE[cat % len(_CATEGORY_PALETTE)])
+
+
+def _categorical_array_to_rgb_image(
+    array: np.ndarray,
+    n_categories: int,
+    scale: int,
+) -> "Image.Image":
+    from PIL import Image
+
+    rows, cols = array.shape
+    pixels = np.zeros((rows, cols, 3), dtype=np.uint8)
+    for r in range(rows):
+        for c in range(cols):
+            pixels[r, c] = _category_rgb(array[r, c], n_categories)
+    img = Image.fromarray(pixels, mode="RGB")
+    if scale > 1:
+        try:
+            resample = Image.Resampling.NEAREST
+        except AttributeError:
+            resample = Image.NEAREST
+        img = img.resize((cols * scale, rows * scale), resample)
+    return img
+
+
+def _render_preview_panel(
+    array: Optional[np.ndarray],
+    samples_df: Optional[pd.DataFrame],
+    *,
+    n_categories: int,
+    n_rows: int,
+    n_cols: int,
+    panel_w: int,
+    panel_h: int,
+    is_samples: bool = False,
+) -> "Image.Image":
+    """Render one preview panel with square cells, centered on a fixed panel canvas."""
+    from PIL import Image, ImageDraw
+
+    panel = Image.new("RGB", (panel_w, panel_h), (255, 255, 255))
+    n_rows = max(int(n_rows), 1)
+    n_cols = max(int(n_cols), 1)
+    scale = max(1, min(panel_w // n_cols, panel_h // n_rows))
+    content_w = n_cols * scale
+    content_h = n_rows * scale
+    ox = (panel_w - content_w) // 2
+    oy = (panel_h - content_h) // 2
+    if is_samples:
+        if samples_df is None or samples_df.empty:
+            return panel
+        draw = ImageDraw.Draw(panel)
+        radius = max(2, scale // 2)
+        for _, row in samples_df.iterrows():
+            x = ox + int((float(row["X"]) - 1) * scale + scale // 2)
+            y = oy + int((float(row["Y"]) - 1) * scale + scale // 2)
+            color = _category_rgb(float(row["V"]), n_categories)
+            draw.ellipse(
+                (x - radius, y - radius, x + radius, y + radius),
+                fill=color,
+                outline=(0, 0, 0),
+            )
+        return panel
+    if array is None:
+        return panel
+    content = _categorical_array_to_rgb_image(array, n_categories, scale=scale)
+    panel.paste(content, (ox, oy))
+    return panel
+
+
 def _jet_rgb(value: float, vmin: float, vmax: float) -> tuple[int, int, int]:
     """Approximate Plotly Jet colormap for a normalized value."""
     if vmax <= vmin:
@@ -570,6 +879,28 @@ def _array_to_rgb_image(array: np.ndarray, vmin: float, vmax: float, scale: int 
     return img
 
 
+def live_preview_placeholder_png(
+    width: int,
+    height: int,
+) -> bytes:
+    """Placeholder with the same canvas size as real preview frames."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (int(width), int(height)), (245, 245, 245))
+    draw = ImageDraw.Draw(img)
+    draw.text((LIVE_PREVIEW_MARGIN, 8), "Preliminary prediction", fill=(40, 40, 40))
+    draw.text(
+        (LIVE_PREVIEW_MARGIN, max(LIVE_PREVIEW_TITLE_H, height // 2 - 8)),
+        "Waiting for first preview (every Preview interval epochs)...",
+        fill=(100, 100, 100),
+    )
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
 def preview_maps_to_png(
     truth: np.ndarray,
     samples_df: pd.DataFrame,
@@ -577,56 +908,86 @@ def preview_maps_to_png(
     epoch: int,
     total_epochs: int,
     n_categories: Optional[int] = None,
+    *,
+    fast: bool = False,
 ) -> bytes:
-    """Rasterize the three-panel preview figure to PNG bytes."""
+    """Rasterize the three-panel preview figure to PNG bytes.
+
+    Layout matches ``exhaustive_sample_prediction_maps`` (280px panels, square
+    cells, discrete category colors). No aspect-distorting resize is applied.
+    """
     import io
 
     from PIL import Image, ImageDraw
 
     if n_categories is None:
         n_categories = int(max(truth.max(), prediction.max(), samples_df["V"].max())) + 1
-    fig = exhaustive_sample_prediction_maps(
+    n_categories = int(n_categories)
+    n_rows, n_cols = truth.shape
+    canvas_w, canvas_h = live_preview_canvas_size((n_rows, n_cols))
+    _, panel_h, _ = _grid_layout_dims(n_rows, n_cols, max_width=LIVE_PANEL_WIDTH)
+
+    if not fast:
+        fig = exhaustive_sample_prediction_maps(
+            truth,
+            samples_df,
+            prediction,
+            title=f"Exhaustive / samples / prediction - epoch {epoch}/{total_epochs}",
+            n_categories=n_categories,
+        )
+        try:
+            return fig.to_image(format="png", scale=1)
+        except Exception:
+            pass
+
+    truth_panel = _render_preview_panel(
         truth,
-        samples_df,
-        prediction,
-        title=f"Exhaustive / samples / prediction — epoch {epoch}/{total_epochs}",
-        n_categories=int(n_categories),
+        None,
+        n_categories=n_categories,
+        n_rows=n_rows,
+        n_cols=n_cols,
+        panel_w=LIVE_PANEL_WIDTH,
+        panel_h=panel_h,
     )
-    try:
-        return fig.to_image(format="png", scale=1)
-    except Exception:
-        vmin = float(min(truth.min(), prediction.min(), samples_df["V"].min()))
-        vmax = float(max(truth.max(), prediction.max(), samples_df["V"].max()))
-        scale = 5
-        truth_img = _array_to_rgb_image(truth, vmin, vmax, scale=scale)
-        pred_img = _array_to_rgb_image(prediction, vmin, vmax, scale=scale)
-        sample_img = truth_img.copy()
-        draw = ImageDraw.Draw(sample_img)
-        radius = max(2, scale // 2)
-        for _, row in samples_df.iterrows():
-            x = int((float(row["X"]) - 1) * scale + scale // 2)
-            y = int((float(row["Y"]) - 1) * scale + scale // 2)
-            color = _jet_rgb(float(row["V"]), vmin, vmax)
-            draw.ellipse(
-                (x - radius, y - radius, x + radius, y + radius),
-                fill=color,
-                outline=(0, 0, 0),
-            )
-        panel_h = truth_img.height
-        panel_w = truth_img.width
-        title_h = 28
-        canvas = Image.new("RGB", (panel_w * 3 + 20, panel_h + title_h), (255, 255, 255))
-        canvas.paste(truth_img, (0, title_h))
-        canvas.paste(sample_img, (panel_w + 10, title_h))
-        canvas.paste(pred_img, (panel_w * 2 + 20, title_h))
-        draw = ImageDraw.Draw(canvas)
-        draw.text((4, 4), f"Epoch {epoch}/{total_epochs}", fill=(0, 0, 0))
-        draw.text((0, title_h - 14), "Truth", fill=(0, 0, 0))
-        draw.text((panel_w + 10, title_h - 14), "Samples", fill=(0, 0, 0))
-        draw.text((panel_w * 2 + 20, title_h - 14), "Prediction", fill=(0, 0, 0))
-        out = io.BytesIO()
-        canvas.save(out, format="PNG")
-        return out.getvalue()
+    sample_panel = _render_preview_panel(
+        None,
+        samples_df,
+        n_categories=n_categories,
+        n_rows=n_rows,
+        n_cols=n_cols,
+        panel_w=LIVE_PANEL_WIDTH,
+        panel_h=panel_h,
+        is_samples=True,
+    )
+    pred_panel = _render_preview_panel(
+        prediction,
+        None,
+        n_categories=n_categories,
+        n_rows=n_rows,
+        n_cols=n_cols,
+        panel_w=LIVE_PANEL_WIDTH,
+        panel_h=panel_h,
+    )
+
+    canvas = Image.new("RGB", (canvas_w, canvas_h), (255, 255, 255))
+    x0 = LIVE_PREVIEW_MARGIN
+    y0 = LIVE_PREVIEW_TITLE_H
+    canvas.paste(truth_panel, (x0, y0))
+    canvas.paste(sample_panel, (x0 + LIVE_PANEL_WIDTH + LIVE_PREVIEW_GUTTER, y0))
+    canvas.paste(
+        pred_panel,
+        (x0 + 2 * (LIVE_PANEL_WIDTH + LIVE_PREVIEW_GUTTER), y0),
+    )
+    draw = ImageDraw.Draw(canvas)
+    draw.text((LIVE_PREVIEW_MARGIN, 6), f"Epoch {epoch}/{total_epochs}", fill=(20, 20, 20))
+    labels = ("Exhaustive (truth)", "Samples", "Prediction")
+    for idx, label in enumerate(labels):
+        lx = x0 + idx * (LIVE_PANEL_WIDTH + LIVE_PREVIEW_GUTTER)
+        draw.text((lx, 28), label, fill=(80, 80, 80))
+
+    out = io.BytesIO()
+    canvas.save(out, format="PNG")
+    return out.getvalue()
 
 
 def assemble_gif_from_png_frames(png_frames: Sequence[bytes], duration_ms: int = 500) -> bytes:

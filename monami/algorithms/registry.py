@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Dict, List
 
 from monami.algorithms.base import Algorithm
+from monami.algorithms.corrected_sis import CorrectedSISAlgorithm
 from monami.algorithms.default_dnn import DefaultDNNAlgorithm
+from monami.algorithms.hybrid_dnn import HybridPositionDNNAlgorithm
 from monami.algorithms.monami_dnn import MonamiDNNAlgorithm
 
 # Bootstrap still uses the relative-position (neighbor) algorithm.
@@ -25,12 +27,18 @@ RELATIVE_POSITION_IDS = frozenset(
         "2_Relative_Position",
         "2_Monami_NN",
         "monami_dnn",
+        "4_Hybrid_Position",
     }
 )
 
-# Register Absolute Position first, then Relative Position. Next new algo: 3_…
+# Register algorithms in the order shown on the Algorithm page.
 _ALGORITHMS: Dict[str, Algorithm] = {}
-for _algo in (DefaultDNNAlgorithm(), MonamiDNNAlgorithm()):
+for _algo in (
+    DefaultDNNAlgorithm(),
+    MonamiDNNAlgorithm(),
+    CorrectedSISAlgorithm(),
+    HybridPositionDNNAlgorithm(),
+):
     _ALGORITHMS[_algo.id] = _algo
 
 

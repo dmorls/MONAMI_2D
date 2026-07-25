@@ -18,9 +18,9 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
     Image,
+    KeepTogether,
     PageBreak,
     Paragraph,
-    Preformatted,
     SimpleDocTemplate,
     Spacer,
     Table,
@@ -30,9 +30,8 @@ from reportlab.platypus import (
 from monami.ml import ModelMeta
 from monami.viz import (
     category_proportion_comparison,
-    confusion_matrix_plot,
     exhaustive_sample_prediction_maps,
-    observed_vs_predicted_scatter,
+    report_cover_overview_maps,
     training_history_live_plot,
     training_history_plot,
 )
@@ -61,13 +60,14 @@ class ReportContext:
     algorithm_long_description: str
     algorithm_config: Dict[str, Any]
     meta: ModelMeta
+    prediction_description: str = ""
+    simulation_description: str = ""
+    statistical_model: Dict[str, Any] = field(default_factory=dict)
     prediction_2d: Optional[np.ndarray] = None
+    prediction_statistics: Optional[Dict[str, Any]] = None
     simulations: List[Dict[str, Any]] = field(default_factory=list)
     history: Any = None
     live_training_history: Optional[Dict[str, List[float]]] = None
-    y_true_test: Optional[np.ndarray] = None
-    y_pred_test: Optional[np.ndarray] = None
-    classification_report_text: str = ""
     model_path: str = ""
     stop_criteria_summary: str = ""
 
@@ -125,15 +125,6 @@ def _styles():
             leading=12,
             alignment=TA_LEFT,
             spaceAfter=4,
-        )
-    )
-    styles.add(
-        ParagraphStyle(
-            name="SmallMono",
-            parent=styles["Code"],
-            fontSize=7,
-            leading=9,
-            fontName="Courier",
         )
     )
     styles.add(
@@ -231,21 +222,32 @@ def _fig_to_png_bytes(fig, width: int = 900) -> Optional[bytes]:
             return None
 
 
-def _image_flowable(png_bytes: Optional[bytes], max_width: float, caption: str, styles) -> List[Any]:
+def _image_flowable(
+    png_bytes: Optional[bytes],
+    max_width: float,
+    caption: str,
+    styles,
+    max_height: Optional[float] = None,
+) -> List[Any]:
+    """Return image + caption kept together so captions are not orphaned on a blank page."""
     items: List[Any] = []
     if png_bytes is None:
         items.append(Paragraph(f"<i>[Figure unavailable: {_escape(caption)}]</i>", styles["BodyLeft"]))
         return items
     bio = io.BytesIO(png_bytes)
     img = Image(bio)
-    # Scale to max width preserving aspect
-    iw, ih = img.imageWidth, img.imageHeight
+    # Scale to max width (and optional max height) preserving aspect
+    iw, ih = float(img.imageWidth), float(img.imageHeight)
+    scale = 1.0
     if iw > max_width:
-        scale = max_width / float(iw)
-        img.drawWidth = max_width
+        scale = min(scale, max_width / iw)
+    draw_h = ih * scale
+    if max_height is not None and draw_h > max_height:
+        scale = min(scale, max_height / ih)
+    if scale != 1.0:
+        img.drawWidth = iw * scale
         img.drawHeight = ih * scale
-    items.append(img)
-    items.append(Paragraph(_escape(caption), styles["Caption"]))
+    items.append(KeepTogether([img, Paragraph(_escape(caption), styles["Caption"])]))
     return items
 
 
@@ -276,6 +278,33 @@ def _final_metrics_lines(metrics: Dict[str, List[float]]) -> List[Tuple[str, str
     return rows
 
 
+def _sample_statistics_rows(metrics: Optional[Dict[str, Any]]) -> List[Tuple[str, str]]:
+    if not metrics:
+        return []
+
+    def _number(key: str) -> str:
+        value = float(metrics.get(key, -1.0))
+        return f"{value:.4f}" if value >= 0 else "n/a"
+
+    return [
+        (
+            "Hard-data fidelity",
+            f"{float(metrics.get('hard_data_fidelity', 0.0)):.1%}",
+        ),
+        ("Sample-proportion L1", _number("proportion_l1")),
+        ("Sample-proportion RMSE", _number("proportion_rmse")),
+        ("Indicator variogram RMSE", _number("variogram_rmse_mean")),
+        (
+            f"Directional transition error X (lag {int(metrics.get('transition_lag_x', 1))})",
+            _number("transition_error_x"),
+        ),
+        (
+            f"Directional transition error Y (lag {int(metrics.get('transition_lag_y', 1))})",
+            _number("transition_error_y"),
+        ),
+    ]
+
+
 def build_pdf_report(ctx: ReportContext, output_path: Path) -> Path:
     """Write an extensive PDF report to ``output_path`` and return the path."""
     output_path = Path(output_path)
@@ -293,22 +322,14 @@ def build_pdf_report(ctx: ReportContext, output_path: Path) -> Path:
     test_n = len(ctx.test_df) if ctx.test_df is not None else 0
     sample_n = len(ctx.samples_df) if ctx.samples_df is not None else 0
     grid_shape = tuple(ctx.truth.shape) if ctx.truth is not None else ()
+    is_statistical = getattr(ctx.meta, "model_type", "keras") == "corrected_sis"
 
     # ----- Cover -----
-    story.append(Spacer(1, 1.2 * inch))
+    story.append(Spacer(1, 0.25 * inch))
     story.append(Paragraph("MONAMI 2D — Results Report", styles["CoverTitle"]))
     story.append(Paragraph(f"Version series: <b>{_escape(version)}</b>", styles["BodyLeft"]))
     story.append(Paragraph(f"Generated: {_escape(when.strftime('%Y-%m-%d %H:%M:%S'))}", styles["BodyLeft"]))
-    story.append(Spacer(1, 0.2 * inch))
-    story.append(
-        Paragraph(
-            "This document summarizes the categorical geostatistical workflow: data, sampling, "
-            "prediction algorithm, training parameters, full-grid prediction / sequential simulations, "
-            "and evaluation metrics available at export time.",
-            styles["BodyJust"],
-        )
-    )
-    story.append(Spacer(1, 0.15 * inch))
+    story.append(Spacer(1, 0.1 * inch))
     story.append(
         _kv_table(
             [
@@ -324,6 +345,39 @@ def build_pdf_report(ctx: ReportContext, output_path: Path) -> Path:
             ]
         )
     )
+
+    cover_sim = None
+    cover_sim_label = "Simulation"
+    if n_sims:
+        first_sim = ctx.simulations[0] or {}
+        cover_sim = first_sim.get("grid")
+        cover_sim_label = str(first_sim.get("label") or "Simulation 1")
+    if ctx.truth is not None and ctx.samples_df is not None:
+        try:
+            fig_cover = report_cover_overview_maps(
+                ctx.truth,
+                ctx.samples_df,
+                prediction=ctx.prediction_2d if has_pred else None,
+                simulation=cover_sim,
+                simulation_label=cover_sim_label,
+                n_categories=int(ctx.categories),
+                title="Overview",
+            )
+            story.append(Spacer(1, 0.12 * inch))
+            story.extend(
+                _image_flowable(
+                    _fig_to_png_bytes(fig_cover, width=1000),
+                    page_width,
+                    "Cover overview: exhaustive / samples"
+                    + (" / prediction" if has_pred else "")
+                    + (f" / {cover_sim_label}" if cover_sim is not None else ""),
+                    styles,
+                )
+            )
+        except Exception:
+            story.append(
+                Paragraph("<i>[Cover overview maps unavailable]</i>", styles["BodyLeft"])
+            )
     story.append(PageBreak())
 
     # ----- Data -----
@@ -369,9 +423,16 @@ def build_pdf_report(ctx: ReportContext, output_path: Path) -> Path:
     )
     story.append(
         Paragraph(
-            "Stratified sampling draws points from the categorized exhaustive field. "
-            "The training split is the hard-data / neighbor pool for prediction and sequential simulation; "
-            "the test split is used for validation metrics when available.",
+            (
+                "Stratified sampling draws points from the categorized exhaustive field. "
+                "For corrected SIS, all sampled points are hard conditioning data and the "
+                "exhaustive field is withheld from model fitting and simulation."
+                if is_statistical
+                else
+                "Stratified sampling draws points from the categorized exhaustive field. "
+                "The training split is the hard-data / neighbor pool for prediction and "
+                "sequential simulation."
+            ),
             styles["BodyJust"],
         )
     )
@@ -395,35 +456,72 @@ def build_pdf_report(ctx: ReportContext, output_path: Path) -> Path:
     story.append(Paragraph("<b>Sequential simulation uncertainty</b>", styles["BodyLeft"]))
     story.append(
         Paragraph(
-            "When sequential simulations are run, uncertainty comes from at least two sources: "
-            "(1) a <b>random path</b> over unsampled cells, and (2) a <b>Monte Carlo draw</b> from the "
-            "DNN softmax distribution at each path cell (not argmax). Hard training samples remain fixed. "
-            "For neighbor-based algorithms, previously simulated values enter the conditioning pool and "
-            "affect later features; for coordinate-only algorithms, features are the cell’s (X, Y) only.",
+            ctx.simulation_description
+            or (
+                "Sequential simulation uses a random path and a Monte Carlo category "
+                "draw at each unsampled cell while hard conditioning values remain fixed."
+            ),
             styles["BodyJust"],
         )
     )
 
     # ----- Training -----
-    story.append(Paragraph("4. Training", styles["SectionHead"]))
+    story.append(
+        Paragraph(
+            "4. Statistical fitting" if is_statistical else "4. Training",
+            styles["SectionHead"],
+        )
+    )
     m = ctx.meta
-    train_rows = [
-        ("Hidden layers", str(list(m.nodes_per_layer))),
-        ("Dropout", str(m.dropout)),
-        ("Optimizer", str(m.optimizer)),
-        ("Loss", str(m.loss_function)),
-        ("Hidden activation", str(m.hidden_activation)),
-        ("Output activation", str(m.out_activation)),
-        ("Test ratio", str(m.test_ratio)),
-        ("Training time (s)", f"{float(m.training_seconds):.2f}"),
-        ("Train sample count (meta)", str(m.train_sample_count)),
-        ("Neighbor / pool count (meta)", str(m.neighbor_sample_count)),
-        ("XY scale", str(m.xy_scale)),
-        ("Class map", str(m.class_to_idx)),
-    ]
+    if is_statistical:
+        train_rows = [
+            ("Model type", "Corrected Sequential Indicator Simulation"),
+            ("Fitting data", "All sampled points; exhaustive truth excluded"),
+            ("Fitting time (s)", f"{float(m.training_seconds):.2f}"),
+            ("Hard sample count", str(m.train_sample_count)),
+            ("Category map", str(m.class_to_idx)),
+            ("Configuration", str(ctx.algorithm_config or {})),
+        ]
+    else:
+        train_rows = [
+            ("Hidden layers", str(list(m.nodes_per_layer))),
+            ("Dropout", str(m.dropout)),
+            ("Optimizer", str(m.optimizer)),
+            ("Loss", str(m.loss_function)),
+            ("Hidden activation", str(m.hidden_activation)),
+            ("Output activation", str(m.out_activation)),
+            ("Test ratio", str(m.test_ratio)),
+            ("Training time (s)", f"{float(m.training_seconds):.2f}"),
+            ("Train sample count (meta)", str(m.train_sample_count)),
+            ("Neighbor / pool count (meta)", str(m.neighbor_sample_count)),
+            ("XY scale", str(m.xy_scale)),
+            ("Class map", str(m.class_to_idx)),
+        ]
     if ctx.stop_criteria_summary:
         train_rows.insert(0, ("Stop criteria", ctx.stop_criteria_summary))
     story.append(_kv_table(train_rows))
+
+    if is_statistical and ctx.statistical_model:
+        story.append(Paragraph("<b>Fitted indicator variograms</b>", styles["BodyLeft"]))
+        fitted_rows = []
+        proportions = ctx.statistical_model.get("proportions", {})
+        for category, values in ctx.statistical_model.get("variograms", {}).items():
+            fitted_rows.append(
+                (
+                    f"Category {category}",
+                    (
+                        f"p={float(proportions.get(str(category), 0.0)):.4f}; "
+                        f"{values.get('model', '—')}; "
+                        f"nugget={float(values.get('nugget', 0.0)):.4g}; "
+                        f"sill={float(values.get('nugget', 0.0)) + float(values.get('partial_sill', 0.0)):.4g}; "
+                        f"range X/Y={float(values.get('range_x', 0.0)):.2f}/"
+                        f"{float(values.get('range_y', 0.0)):.2f}; "
+                        f"fit RMSE={float(values.get('fit_rmse', -1.0)):.4g}"
+                    ),
+                )
+            )
+        if fitted_rows:
+            story.append(_kv_table(fitted_rows))
 
     metrics = _history_metrics_dict(ctx)
     if metrics:
@@ -436,21 +534,30 @@ def build_pdf_report(ctx: ReportContext, output_path: Path) -> Path:
                 fig = training_history_plot(ctx.history, title="Training history")
             else:
                 fig = training_history_live_plot(metrics, title="Training history")
+            # Compact curves so section 4 fits on 1–2 pages without a trailing blank page.
+            fig.update_layout(height=280, width=800, margin=dict(l=40, r=20, t=45, b=30))
             png = _fig_to_png_bytes(fig, width=800)
-            story.extend(_image_flowable(png, page_width, "Training accuracy and loss curves", styles))
+            story.extend(
+                _image_flowable(
+                    png,
+                    page_width,
+                    "Training accuracy and loss curves",
+                    styles,
+                    max_height=2.8 * inch,
+                )
+            )
         except Exception:
             story.append(Paragraph("<i>[Training history figure unavailable]</i>", styles["BodyLeft"]))
-    else:
+    elif not is_statistical:
         story.append(Paragraph("<i>No training history available in this session.</i>", styles["BodyLeft"]))
-
-    story.append(PageBreak())
 
     # ----- Most-likely results -----
     story.append(Paragraph("5. Results — most-likely prediction", styles["SectionHead"]))
     if has_pred:
         story.append(
             Paragraph(
-                "Deterministic full-grid map: argmax of the DNN softmax at every cell.",
+                ctx.prediction_description
+                or "Deterministic full-grid category estimate from the fitted model.",
                 styles["BodyJust"],
             )
         )
@@ -468,6 +575,7 @@ def build_pdf_report(ctx: ReportContext, output_path: Path) -> Path:
                     page_width,
                     "Exhaustive / samples / most-likely prediction",
                     styles,
+                    max_height=3.6 * inch,
                 )
             )
         except Exception:
@@ -487,10 +595,21 @@ def build_pdf_report(ctx: ReportContext, output_path: Path) -> Path:
                     page_width,
                     "Category proportions: exhaustive / training / prediction",
                     styles,
+                    max_height=2.8 * inch,
                 )
             )
         except Exception:
             story.append(Paragraph("<i>[Proportion chart unavailable]</i>", styles["BodyLeft"]))
+        prediction_stat_rows = _sample_statistics_rows(ctx.prediction_statistics)
+        if prediction_stat_rows:
+            story.append(
+                Paragraph(
+                    "<b>Sample-derived statistical fidelity</b> "
+                    "(exhaustive truth not used)",
+                    styles["BodyLeft"],
+                )
+            )
+            story.append(_kv_table(prediction_stat_rows))
     else:
         story.append(
             Paragraph(
@@ -511,8 +630,11 @@ def build_pdf_report(ctx: ReportContext, output_path: Path) -> Path:
     else:
         story.append(
             Paragraph(
-                f"{n_sims} realization(s) included below. Each uses a random path and "
-                "softmax Monte Carlo sampling as described in Section 3.",
+                f"{n_sims} realization(s) included below. "
+                + (
+                    ctx.simulation_description
+                    or "Each uses a random path and Monte Carlo categorical draws."
+                ),
                 styles["BodyJust"],
             )
         )
@@ -563,50 +685,25 @@ def build_pdf_report(ctx: ReportContext, output_path: Path) -> Path:
                 story.append(
                     Paragraph(f"<i>[Proportions unavailable for {_escape(label)}]</i>", styles["BodyLeft"])
                 )
+            simulation_stat_rows = _sample_statistics_rows(sim.get("statistics"))
+            if simulation_stat_rows:
+                story.append(
+                    Paragraph(
+                        "<b>Sample-derived statistical fidelity</b>",
+                        styles["BodyLeft"],
+                    )
+                )
+                story.append(_kv_table(simulation_stat_rows))
 
-    # ----- Metrics -----
-    story.append(PageBreak())
-    story.append(Paragraph("7. Test-set metrics", styles["SectionHead"]))
-    story.append(
-        Paragraph(
-            "Metrics below use the most-likely (argmax) prediction evaluated at test-sample locations, "
-            "not sequential realizations.",
-            styles["BodyJust"],
-        )
-    )
-    if ctx.y_true_test is not None and ctx.y_pred_test is not None and len(ctx.y_true_test) > 0:
-        try:
-            fig_cm = confusion_matrix_plot(ctx.y_true_test, ctx.y_pred_test)
-            story.extend(
-                _image_flowable(
-                    _fig_to_png_bytes(fig_cm, width=600),
-                    page_width * 0.85,
-                    "Confusion matrix (test set)",
-                    styles,
-                )
-            )
-        except Exception:
-            story.append(Paragraph("<i>[Confusion matrix unavailable]</i>", styles["BodyLeft"]))
-        try:
-            fig_sc = observed_vs_predicted_scatter(ctx.y_true_test, ctx.y_pred_test)
-            story.extend(
-                _image_flowable(
-                    _fig_to_png_bytes(fig_sc, width=600),
-                    page_width * 0.85,
-                    "Observed vs predicted (test set)",
-                    styles,
-                )
-            )
-        except Exception:
-            story.append(Paragraph("<i>[Scatter plot unavailable]</i>", styles["BodyLeft"]))
-        if ctx.classification_report_text:
-            story.append(Paragraph("<b>Classification report</b>", styles["BodyLeft"]))
-            story.append(Preformatted(ctx.classification_report_text, styles["SmallMono"]))
-    else:
+    if is_statistical:
+        story.append(PageBreak())
+        story.append(Paragraph("7. Statistical validation", styles["SectionHead"]))
         story.append(
             Paragraph(
-                "Test-set metrics were not available (no most-likely prediction and/or no test split).",
-                styles["BodyLeft"],
+                "Corrected SIS uses every sample as hard conditioning data. "
+                "Hard-data, sampled-proportion, indicator-variogram, and transition "
+                "statistics are reported with each prediction/realization above.",
+                styles["BodyJust"],
             )
         )
 
