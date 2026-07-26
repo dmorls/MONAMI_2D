@@ -60,6 +60,47 @@ def _require_columns(df: pd.DataFrame) -> None:
         raise ValueError(f"Sample DataFrame missing columns: {sorted(missing)}")
 
 
+def nearest_neighbor_indices(
+    target_xy: np.ndarray,
+    neighbor_df: pd.DataFrame,
+    n_nearest: int,
+    exclude_self: bool = True,
+) -> np.ndarray:
+    """Return pool row indices of the ``n_nearest`` neighbors (nearest-first).
+
+    Uses the same KD-tree / self-exclusion rules as feature construction.
+    """
+    _require_columns(neighbor_df)
+    if len(neighbor_df) <= n_nearest and exclude_self:
+        raise ValueError(
+            f"Need more than {n_nearest} neighbor samples when excluding self; got {len(neighbor_df)}"
+        )
+    if len(neighbor_df) < n_nearest and not exclude_self:
+        raise ValueError(
+            f"Need at least {n_nearest} neighbor samples; got {len(neighbor_df)}"
+        )
+
+    target_xy = np.asarray(target_xy, dtype=float).reshape(1, 2)
+    pool_xy = neighbor_df[["X", "Y"]].to_numpy(dtype=float)
+    tree = cKDTree(pool_xy)
+    k_query = n_nearest + 1 if exclude_self else n_nearest
+    k_query = min(k_query, len(neighbor_df))
+    dists, idxs = tree.query(target_xy, k=k_query)
+    row_idx = np.atleast_1d(idxs[0] if np.ndim(idxs) > 1 else idxs)
+    row_dist = np.atleast_1d(dists[0] if np.ndim(dists) > 1 else dists)
+    if exclude_self:
+        keep = row_dist > 1e-9
+        row_idx = row_idx[keep][:n_nearest]
+    else:
+        row_idx = row_idx[:n_nearest]
+    if len(row_idx) < n_nearest:
+        raise ValueError(
+            f"Target ({target_xy[0, 0]}, {target_xy[0, 1]}) has only "
+            f"{len(row_idx)} neighbors after exclusion; need {n_nearest}"
+        )
+    return np.asarray(row_idx, dtype=int)
+
+
 def build_feature_row(
     target_x: float,
     target_y: float,
@@ -190,8 +231,14 @@ def build_training_matrix(
     neighbor_pool_df: pd.DataFrame,
     n_nearest: int,
     include_target_xy: bool = False,
+    ti_samples_df: pd.DataFrame | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[str], np.ndarray]:
-    """Build train/test feature matrices and category targets."""
+    """Build train/test feature matrices and category targets.
+
+    Optional ``ti_samples_df`` appends auxiliary training rows whose neighbors
+    come from the TI pool only. ``xy_scale`` is taken from the target neighbor
+    pool so prediction on the target slice stays consistent.
+    """
     xy_scale = compute_xy_scale(neighbor_pool_df)
     x_train = build_feature_matrix(
         train_df,
@@ -216,4 +263,23 @@ def build_training_matrix(
         if include_target_xy
         else feature_names(n_nearest)
     )
+
+    if ti_samples_df is not None and len(ti_samples_df) > 0:
+        if len(ti_samples_df) <= n_nearest:
+            raise ValueError(
+                f"Training image has {len(ti_samples_df)} samples; need more than "
+                f"{n_nearest} neighbors for relative/hybrid features."
+            )
+        x_ti = build_feature_matrix(
+            ti_samples_df,
+            ti_samples_df,
+            n_nearest,
+            exclude_self=True,
+            xy_scale=xy_scale,
+            include_target_xy=include_target_xy,
+        )
+        y_ti = ti_samples_df["V"].astype(int).to_numpy()
+        x_train = np.vstack([x_train, x_ti])
+        y_train = np.concatenate([y_train, y_ti])
+
     return x_train, y_train, x_test, y_test, names, xy_scale

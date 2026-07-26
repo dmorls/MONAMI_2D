@@ -336,6 +336,128 @@ def sample_scatter(
     return _apply_grid_aspect(fig, n_rows, n_cols, max_width=max_width)
 
 
+def neighbor_inspection_scatter(
+    train_pool_df: pd.DataFrame,
+    focus_index: int,
+    neighbor_indices: Sequence[int],
+    grid_shape: Optional[tuple[int, int]] = None,
+    n_categories: Optional[int] = None,
+    max_width: int = SPATIAL_MAX_WIDTH,
+    title: Optional[str] = None,
+) -> go.Figure:
+    """Scatter of training-pool samples with focus point and nearest neighbors highlighted."""
+    pool = train_pool_df.reset_index(drop=True)
+    if len(pool) == 0:
+        raise ValueError("Training pool is empty")
+    focus_index = int(np.clip(focus_index, 0, len(pool) - 1))
+    neighbor_indices = [int(i) for i in neighbor_indices]
+    if grid_shape is not None:
+        n_rows, n_cols = grid_shape
+    else:
+        n_rows = int(pool["Y"].max())
+        n_cols = int(pool["X"].max())
+
+    cs, cmin, cmax, cbar = _resolve_category_style(
+        n_categories,
+        float(pool["V"].min()),
+        float(pool["V"].max()),
+    )
+    focus = pool.iloc[focus_index]
+    fx, fy, fv = float(focus["X"]), float(focus["Y"]), int(focus["V"])
+    n = len(neighbor_indices)
+    if title is None:
+        title = f"Neighbors for training sample #{focus_index} (n={n})"
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=pool["X"],
+            y=pool["Y"],
+            mode="markers",
+            marker=dict(
+                size=7,
+                color=pool["V"],
+                colorscale=cs,
+                cmin=cmin,
+                cmax=cmax,
+                colorbar=cbar,
+                opacity=0.35,
+                line=dict(width=0.4, color="#444444"),
+            ),
+            name="Training pool",
+            hovertemplate="X=%{x}<br>Y=%{y}<br>V=%{marker.color}<extra></extra>",
+            showlegend=True,
+        )
+    )
+
+    # Lines from focus to each neighbor (nearest-first).
+    for rank, idx in enumerate(neighbor_indices, start=1):
+        nb = pool.iloc[int(idx)]
+        fig.add_trace(
+            go.Scatter(
+                x=[fx, float(nb["X"])],
+                y=[fy, float(nb["Y"])],
+                mode="lines",
+                line=dict(color="#555555", width=1),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    if neighbor_indices:
+        nb_df = pool.iloc[neighbor_indices]
+        fig.add_trace(
+            go.Scatter(
+                x=nb_df["X"],
+                y=nb_df["Y"],
+                mode="markers+text",
+                marker=dict(
+                    size=14,
+                    color=nb_df["V"],
+                    colorscale=cs,
+                    cmin=cmin,
+                    cmax=cmax,
+                    showscale=False,
+                    line=dict(width=2, color="#111111"),
+                    symbol="diamond",
+                ),
+                text=[str(i) for i in range(1, n + 1)],
+                textposition="top center",
+                textfont=dict(size=11, color="#111111"),
+                name="Nearest neighbors",
+                hovertemplate="rank %{text}<br>X=%{x}<br>Y=%{y}<br>V=%{marker.color}<extra></extra>",
+            )
+        )
+
+    fig.add_trace(
+        go.Scatter(
+            x=[fx],
+            y=[fy],
+            mode="markers",
+            marker=dict(
+                size=18,
+                color=fv,
+                colorscale=cs,
+                cmin=cmin,
+                cmax=cmax,
+                showscale=False,
+                line=dict(width=3, color="#E45756"),
+                symbol="circle",
+            ),
+            name="Focus sample",
+            hovertemplate=f"focus #{focus_index}<br>X={fx}<br>Y={fy}<br>V={fv}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=title,
+        xaxis_title="Column (X)",
+        yaxis_title="Row (Y)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+    )
+    return _apply_grid_aspect(fig, n_rows, n_cols, max_width=max_width)
+
+
 def sample_overlay_on_slice(
     slice_2d: np.ndarray,
     samples_df: pd.DataFrame,

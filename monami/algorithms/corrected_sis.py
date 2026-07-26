@@ -193,8 +193,9 @@ statistics measured in the sampled data.
         log_callback: Optional[Callable[[str], None]] = None,
         warm_start: Any = None,
         epochs_to_run: Optional[int] = None,
+        ti_samples_df: Optional[pd.DataFrame] = None,
     ) -> TrainingResult:
-        del test_df, neighbor_pool_df, warm_start, epochs_to_run
+        del test_df, neighbor_pool_df, warm_start, epochs_to_run, ti_samples_df
         validation_error = self.validate_config(algo_config, train_df)
         if validation_error:
             raise ValueError(validation_error)

@@ -194,7 +194,8 @@ if not algorithm.supports_dnn_training_page():
     st.info(
         "This algorithm fits category proportions and indicator variograms from "
         "**all sampled points**. DNN hyperparameters and train/test splitting are not used. "
-        "The exhaustive field remains validation-only."
+        "The exhaustive field remains validation-only. "
+        "An optional training image (TI) from Sampling is ignored here."
     )
 
     samples = st.session_state.samples_df
@@ -529,6 +530,19 @@ if config_error:
 
 st.session_state.train_df = train_df
 st.session_state.test_df = test_df
+ti_samples_df = st.session_state.get("ti_samples_df")
+ti_n = int(len(ti_samples_df)) if ti_samples_df is not None else 0
+if ti_n:
+    st.caption(
+        f"Training labels: **{len(train_df):,}** target train + **{ti_n:,}** TI aux; "
+        f"hard data for Results: **{len(train_df):,}** target train only "
+        f"(TI Z = {st.session_state.get('ti_level')})."
+    )
+else:
+    st.caption(
+        f"Training labels: **{len(train_df):,}** train · **{len(test_df):,}** test "
+        "(no training image)."
+    )
 
 grid_shape = st.session_state.categorized_2d.shape if st.session_state.categorized_2d is not None else None
 n_cat = int(st.session_state.get("n_categories_effective") or st.session_state.categories)
@@ -738,6 +752,7 @@ def _live_training_fragment() -> None:
                 log_callback=append_training_log,
                 warm_start=st.session_state.get("tr_warm_start"),
                 epochs_to_run=_LIVE_EPOCH_BATCH,
+                ti_samples_df=ti_samples_df,
             )
         except Exception as exc:
             st.session_state.training_active = False

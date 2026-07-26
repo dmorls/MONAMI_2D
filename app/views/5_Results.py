@@ -479,6 +479,17 @@ if gen_report:
             live_training_history=st.session_state.get("live_training_history"),
             model_path=str(st.session_state.get("model_path") or ""),
             stop_criteria_summary=stop_summary,
+            ti_level=(
+                int(st.session_state["ti_level"])
+                if st.session_state.get("ti_samples_df") is not None
+                and st.session_state.get("ti_level") is not None
+                else None
+            ),
+            ti_sample_count=(
+                int(len(st.session_state["ti_samples_df"]))
+                if st.session_state.get("ti_samples_df") is not None
+                else 0
+            ),
         )
 
         with st.spinner("Building PDF report..."):

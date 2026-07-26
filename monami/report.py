@@ -70,6 +70,8 @@ class ReportContext:
     live_training_history: Optional[Dict[str, List[float]]] = None
     model_path: str = ""
     stop_criteria_summary: str = ""
+    ti_level: Optional[int] = None
+    ti_sample_count: int = 0
 
 
 def sanitize_version(version: str) -> str:
@@ -409,18 +411,22 @@ def build_pdf_report(ctx: ReportContext, output_path: Path) -> Path:
 
     # ----- Sampling -----
     story.append(Paragraph("2. Sampling", styles["SectionHead"]))
-    story.append(
-        _kv_table(
+    sampling_rows = [
+        ("Number of categories", str(ctx.categories)),
+        ("Sample density (%)", f"{float(ctx.sample_pct):.2f}"),
+        ("Total samples (target)", str(sample_n)),
+        ("Training samples (target)", str(train_n)),
+        ("Test / validation samples", str(test_n)),
+        ("Random seed", str(ctx.random_seed)),
+    ]
+    if ctx.ti_sample_count and ctx.ti_level is not None:
+        sampling_rows.extend(
             [
-                ("Number of categories", str(ctx.categories)),
-                ("Sample density (%)", f"{float(ctx.sample_pct):.2f}"),
-                ("Total samples", str(sample_n)),
-                ("Training samples", str(train_n)),
-                ("Test / validation samples", str(test_n)),
-                ("Random seed", str(ctx.random_seed)),
+                ("Training image Z level", str(ctx.ti_level)),
+                ("Training image aux labels", str(int(ctx.ti_sample_count))),
             ]
         )
-    )
+    story.append(_kv_table(sampling_rows))
     story.append(
         Paragraph(
             (
@@ -432,6 +438,13 @@ def build_pdf_report(ctx: ReportContext, output_path: Path) -> Path:
                 "Stratified sampling draws points from the categorized exhaustive field. "
                 "The training split is the hard-data / neighbor pool for prediction and "
                 "sequential simulation."
+                + (
+                    " An optional training-image (TI) Z-slice supplied auxiliary DNN "
+                    "training labels categorized with the same thresholds; TI points "
+                    "are not hard-pinned on the target grid."
+                    if ctx.ti_sample_count and ctx.ti_level is not None
+                    else ""
+                )
             ),
             styles["BodyJust"],
         )

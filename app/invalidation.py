@@ -30,6 +30,8 @@ def make_sampling_fingerprint(
     threshold_text: str,
     vmin: float,
     vmax: float,
+    use_training_image: bool = False,
+    ti_level: Optional[int] = None,
 ) -> tuple[Any, ...]:
     return (
         int(selected_level),
@@ -42,6 +44,8 @@ def make_sampling_fingerprint(
         str(threshold_text).strip(),
         round(float(vmin), 8),
         round(float(vmax), 8),
+        bool(use_training_image),
+        int(ti_level) if use_training_image and ti_level is not None else None,
     )
 
 
@@ -167,6 +171,8 @@ def refresh_sampling_fingerprint_from_data(
         threshold_text=st.session_state.category_threshold_text,
         vmin=float(st.session_state.get("_sampling_vmin", 0.0)),
         vmax=float(st.session_state.get("_sampling_vmax", 0.0)),
+        use_training_image=bool(st.session_state.get("use_training_image", False)),
+        ti_level=st.session_state.get("ti_level"),
     )
     set_current_sampling_fingerprint(fingerprint)
 
@@ -215,6 +221,8 @@ def migrate_legacy_fingerprints() -> None:
                 threshold_text=str(st.session_state.category_threshold_text),
                 vmin=float(vmin),
                 vmax=float(vmax),
+                use_training_image=bool(st.session_state.get("use_training_image", False)),
+                ti_level=st.session_state.get("ti_level"),
             )
         )
     migrate_algorithm_fingerprint()

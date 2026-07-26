@@ -21,6 +21,7 @@ from monami.geostats import (
     resolve_variogram_directions,
     top_categories_by_frequency,
 )
+from monami.io import extract_slice
 from monami.sampling import sample_fraction_to_strata, stratified_sample_dataframe
 from monami.transform import (
     categorize_slice,
@@ -173,10 +174,57 @@ st.plotly_chart(
     use_container_width=True,
 )
 
+st.subheader("Training image (optional)")
+st.caption(
+    "Use another Z-slice as auxiliary **DNN training labels** only. "
+    "TI is categorized with the **same thresholds** as the target slice, sampled at the "
+    "same density, and is **not** hard-pinned on target prediction/simulation maps. "
+    "Corrected SIS ignores the training image."
+)
+meta = st.session_state.grid_meta
+nz = int(getattr(meta, "nz", 1) or 1)
+target_level = int(st.session_state.selected_level)
+use_ti = st.checkbox(
+    "Enable training image",
+    value=bool(st.session_state.get("use_training_image", False)),
+    key="use_training_image_checkbox",
+)
+st.session_state.use_training_image = bool(use_ti)
+ti_level_value = st.session_state.get("ti_level")
+if ti_level_value is None or int(ti_level_value) == target_level:
+    ti_level_value = 1 if target_level == 0 and nz > 1 else 0
+ti_level_value = int(np.clip(int(ti_level_value), 0, max(nz - 1, 0)))
+if use_ti:
+    if nz <= 1:
+        st.warning("Volume has only one Z level; a separate training-image slice is unavailable.")
+        st.session_state.use_training_image = False
+        use_ti = False
+        ti_level = None
+    else:
+        ti_level = st.number_input(
+            "Training-image Z index",
+            min_value=0,
+            max_value=nz - 1,
+            value=ti_level_value,
+            step=1,
+            help=f"Must differ from the target slice level ({target_level}).",
+            key="ti_level_input",
+        )
+        ti_level = int(ti_level)
+        if ti_level == target_level:
+            st.error(
+                f"Training-image level must differ from the target slice ({target_level})."
+            )
+        st.session_state.ti_level = ti_level
+else:
+    ti_level = None
+    st.session_state.ti_level = None
+
 st.session_state.random_seed = int(seed)
 st.session_state._sampling_vmin = float(vmin)
 st.session_state._sampling_vmax = float(vmax)
 
+ti_enabled_for_fp = bool(st.session_state.use_training_image) and ti_level is not None
 set_current_sampling_fingerprint(
     make_sampling_fingerprint(
         selected_level=int(st.session_state.selected_level),
@@ -189,10 +237,20 @@ set_current_sampling_fingerprint(
         threshold_text=threshold_text,
         vmin=float(vmin),
         vmax=float(vmax),
+        use_training_image=ti_enabled_for_fp,
+        ti_level=ti_level if ti_enabled_for_fp else None,
     )
 )
 
-if st.button("Discretize and sample", type="primary", disabled=threshold_error is not None):
+ti_level_invalid = (
+    bool(st.session_state.use_training_image)
+    and (ti_level is None or int(ti_level) == target_level or nz <= 1)
+)
+if st.button(
+    "Discretize and sample",
+    type="primary",
+    disabled=threshold_error is not None or ti_level_invalid,
+):
     with st.spinner("Categorizing and sampling..."):
         _, categorized, edges = categorize_slice(
             continuous,
@@ -206,6 +264,32 @@ if st.button("Discretize and sample", type="primary", disabled=threshold_error i
         st.session_state.category_thresholds = edges
         st.session_state.n_categories_effective = len(edges) - 1
         st.session_state.categories = len(edges) - 1
+
+        ti_msg = ""
+        if st.session_state.use_training_image and ti_level is not None:
+            volume = st.session_state.volume_3d
+            ti_continuous = extract_slice(volume, int(ti_level), meta)
+            _, ti_categorized, _ = categorize_slice(
+                ti_continuous,
+                n_categories=len(edges) - 1,
+                method="quantile",
+                bin_edges=edges,
+            )
+            ti_samples = stratified_sample_dataframe(
+                ti_categorized, int(n_h), int(n_v), seed=int(seed) + 17
+            )
+            st.session_state.ti_categorized_2d = ti_categorized
+            st.session_state.ti_samples_df = ti_samples
+            st.session_state.ti_level = int(ti_level)
+            ti_msg = (
+                f" Training image Z={int(ti_level)}: {len(ti_samples):,} aux DNN labels."
+            )
+        else:
+            st.session_state.use_training_image = False
+            st.session_state.ti_level = None
+            st.session_state.ti_samples_df = None
+            st.session_state.ti_categorized_2d = None
+
         commit_sampling_fingerprint(
             make_sampling_fingerprint(
                 selected_level=int(st.session_state.selected_level),
@@ -218,9 +302,14 @@ if st.button("Discretize and sample", type="primary", disabled=threshold_error i
                 threshold_text=threshold_text,
                 vmin=float(vmin),
                 vmax=float(vmax),
+                use_training_image=bool(st.session_state.ti_samples_df is not None),
+                ti_level=st.session_state.ti_level,
             )
         )
-    st.success(f"Created {len(samples)} samples across {len(edges) - 1} categories.")
+    st.success(
+        f"Created {len(samples)} target samples across {len(edges) - 1} categories."
+        + ti_msg
+    )
     st.rerun()
 
 if sampling_ready():
@@ -267,6 +356,36 @@ if sampling_ready():
             use_container_width=False,
         )
         st.caption(f"Thresholds used: `{thresholds_to_text(stored_edges)}`")
+
+        ti_cat = st.session_state.get("ti_categorized_2d")
+        ti_samples = st.session_state.get("ti_samples_df")
+        if ti_cat is not None and ti_samples is not None:
+            st.markdown(
+                f"#### Training image (Z = {st.session_state.get('ti_level')}) — "
+                f"{len(ti_samples):,} aux labels"
+            )
+            t1, t2 = st.columns(2)
+            with t1:
+                st.plotly_chart(
+                    heatmap_slice(
+                        ti_cat,
+                        title="TI categorized slice",
+                        max_width=_pair_width,
+                        n_categories=n_cat,
+                    ),
+                    use_container_width=False,
+                )
+            with t2:
+                st.plotly_chart(
+                    sample_scatter(
+                        ti_samples,
+                        title="TI sample locations",
+                        grid_shape=ti_cat.shape,
+                        max_width=_pair_width,
+                        n_categories=n_cat,
+                    ),
+                    use_container_width=False,
+                )
 
     with tab2:
         st.plotly_chart(

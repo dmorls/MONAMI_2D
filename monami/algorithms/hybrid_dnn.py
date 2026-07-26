@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
-from monami.algorithms.monami_dnn import MonamiDNNAlgorithm
+from monami.algorithms.monami_dnn import MonamiDNNAlgorithm, render_neighbor_inspector
 from monami.config import MLConfig
 from monami.features import hybrid_feature_dim
 from monami.ml import split_samples
@@ -56,17 +56,13 @@ features so the network can learn which cues matter most.
         max_neighbors = max(1, len(train_pool) - 1)
         default_n = min(int(default_config.get("n_nearest", MLConfig().n_nearest)), max_neighbors)
 
-        n_nearest = st_module.number_input(
-            "Nearest neighbors (n)",
-            min_value=1,
-            max_value=max_neighbors,
-            value=default_n,
-            help=(
-                "Number of closest **training** samples used for relative features "
-                "(dX, dY, D, V per neighbor), in addition to absolute X, Y. "
-                f"Maximum is one less than the training pool size (currently **{max_neighbors}**)."
-            ),
-            key="hybrid_n_nearest",
+        n_nearest = render_neighbor_inspector(
+            st_module,
+            train_pool,
+            default_n,
+            categorized_2d,
+            key_prefix="hybrid",
+            max_neighbors=max_neighbors,
         )
         st_module.caption(
             f"Input dimension = {hybrid_feature_dim(int(n_nearest))} "

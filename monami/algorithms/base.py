@@ -77,11 +77,14 @@ class Algorithm(ABC):
         log_callback: Optional[Callable[[str], None]] = None,
         warm_start: Any = None,
         epochs_to_run: Optional[int] = None,
+        ti_samples_df: Optional[pd.DataFrame] = None,
     ) -> TrainingResult:
         """Train and return model, history, and metadata.
 
         Optional ``warm_start`` / ``epochs_to_run`` support one-epoch Streamlit steps
         so training can yield between epochs (Stop button) without a TF background thread.
+
+        Optional ``ti_samples_df`` supplies auxiliary training-image labels (DNN only).
         """
 
     @abstractmethod

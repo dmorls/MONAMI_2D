@@ -73,9 +73,18 @@ porosity
 
 Grid dimensions are parsed from the first line. Values are reshaped to `(nz, ny, nx)` for level slicing.
 
+## Optional training image (TI)
+
+On **Sampling**, you can enable a **training image**: another Z-slice from the same 3D volume.
+
+- TI is categorized with the **same thresholds** as the target slice and sampled at the same density.
+- TI points are **auxiliary DNN training labels only** (Absolute / Relative / Hybrid). They are **not** hard-pinned on the target grid for prediction or sequential simulation.
+- Relative/Hybrid neighbor features for TI rows use the TI sample pool; target rows and Results hard data use the target training split only.
+- **Corrected SIS** ignores the training image.
+
 ## Relative Position (`2_Relative_Position`)
 
-See [`monami/algorithm`](monami/algorithm) for the MONAMI neighbor-feature specification. Neighbor features (dX, dY, D, V) are built from the **training split only**; the test split is used for validation labels only. Saved model bundles include `{model}_samples.csv` (training pool) for prediction.
+See [`monami/algorithm`](monami/algorithm) for the MONAMI neighbor-feature specification. Neighbor features (dX, dY, D, V) are built from the **training split only**; the test split is used for validation labels only. Saved model bundles include `{model}_samples.csv` (training pool) for prediction. On the Algorithm page, **Inspect nearest neighbors** walks the training pool with a slider and highlights the `n` conditioning neighbors used for features.
 
 ## Absolute Position (`1_Absolute_Position`)
 
@@ -83,7 +92,7 @@ Baseline coordinate DNN: inputs are normalized absolute **X** and **Y**; the lab
 
 ## Hybrid Position (`4_Hybrid_Position`)
 
-Combines Absolute and Relative Position: normalized target **X**, **Y** are prepended to the MONAMI neighbor block (`dX`, `dY`, `D`, `V` × `n`). Input dimension = `2 + 4 × n`. Training can learn how much weight to give absolute location vs local neighborhood. Prediction and sequential simulation use the same hybrid vector; simulation grows the conditioning pool like Relative Position.
+Combines Absolute and Relative Position: normalized target **X**, **Y** are prepended to the MONAMI neighbor block (`dX`, `dY`, `D`, `V` × `n`). Input dimension = `2 + 4 × n`. Training can learn how much weight to give absolute location vs local neighborhood. Prediction and sequential simulation use the same hybrid vector; simulation grows the conditioning pool like Relative Position. The Algorithm page includes the same nearest-neighbor inspector as Relative Position (training-pool focus sample + `n` neighbors).
 
 ## Corrected SIS (`3_Corrected_SIS`)
 

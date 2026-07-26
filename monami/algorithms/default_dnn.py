@@ -119,6 +119,7 @@ Use this algorithm as a transparent reference against relative-position / neighb
         log_callback: Optional[Callable[[str], None]] = None,
         warm_start: Any = None,
         epochs_to_run: Optional[int] = None,
+        ti_samples_df: Optional[pd.DataFrame] = None,
     ) -> TrainingResult:
         from tensorflow.keras.callbacks import LambdaCallback
         from tensorflow.keras.utils import to_categorical
@@ -128,17 +129,26 @@ Use this algorithm as a transparent reference against relative-position / neighb
         max_epochs = effective_max_epochs(ml_config)
         chunk = int(epochs_to_run) if epochs_to_run is not None else max_epochs
         input_dim = 2
+        ti_n = int(len(ti_samples_df)) if ti_samples_df is not None else 0
 
         if warm_start is None:
             _training_log(
                 log_callback,
-                f"Preparing data: {len(train_df)} train / {len(test_df)} test, features = X, Y",
+                f"Preparing data: {len(train_df)} train / {len(test_df)} test, features = X, Y"
+                + (f", TI aux labels={ti_n}" if ti_n else ""),
             )
             xy_scale = compute_xy_scale(train_df)
             x_train = _xy_features(train_df[["X", "Y"]].to_numpy(dtype=float), xy_scale)
             x_test = _xy_features(test_df[["X", "Y"]].to_numpy(dtype=float), xy_scale)
             y_train_raw = train_df["V"].to_numpy()
             y_test_raw = test_df["V"].to_numpy()
+            if ti_samples_df is not None and len(ti_samples_df) > 0:
+                x_ti = _xy_features(
+                    ti_samples_df[["X", "Y"]].to_numpy(dtype=float), xy_scale
+                )
+                y_ti = ti_samples_df["V"].to_numpy()
+                x_train = np.vstack([x_train, x_ti])
+                y_train_raw = np.concatenate([y_train_raw, y_ti])
             _training_log(log_callback, f"Feature dimension: {input_dim} (X, Y)")
 
             classes = sorted(int(c) for c in set(y_train_raw) | set(y_test_raw))

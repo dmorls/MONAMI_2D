@@ -18,6 +18,7 @@ from monami.features import (
     compute_xy_scale,
     feature_dim,
     hybrid_feature_dim,
+    nearest_neighbor_indices,
 )
 from monami.ml import ModelMeta, split_samples
 from monami.simulation import sequential_simulate_grid
@@ -27,8 +28,77 @@ from monami.training_stop import (
     stop_mode_summary,
 )
 from monami.transform import numpy2d_to_easyformat
+from monami.viz import neighbor_inspection_scatter
 
 ALGORITHM_SPEC_PATH = Path(__file__).resolve().parents[1] / "algorithm"
+
+
+def render_neighbor_inspector(
+    st_module: Any,
+    train_pool: pd.DataFrame,
+    n_nearest: int,
+    categorized_2d: np.ndarray,
+    *,
+    key_prefix: str = "relative",
+    max_neighbors: Optional[int] = None,
+) -> int:
+    """Streamlit UI: sliders for focus sample and n, plus neighbor highlight plot.
+
+    Returns the selected ``n_nearest`` (also used as the model config value).
+    """
+    pool = train_pool.reset_index(drop=True)
+    if len(pool) < 2:
+        st_module.caption("Need at least two training-pool samples to inspect neighbors.")
+        return max(1, int(n_nearest))
+    max_n = max(1, int(max_neighbors) if max_neighbors is not None else len(pool) - 1)
+    default_n = max(1, min(int(n_nearest), max_n))
+    with st_module.expander("Inspect nearest neighbors", expanded=True):
+        st_module.caption(
+            "Neighbors come from the **training split only** (same pool used for model features). "
+            "Diamonds are conditioning neighbors, numbered by distance rank."
+        )
+        focus_index = st_module.slider(
+            "Focus training sample",
+            min_value=0,
+            max_value=len(pool) - 1,
+            value=0,
+            step=1,
+            key=f"{key_prefix}_neighbor_focus",
+        )
+        n = st_module.slider(
+            "Nearest neighbors (n)",
+            min_value=1,
+            max_value=max_n,
+            value=default_n,
+            step=1,
+            key=f"{key_prefix}_neighbor_n",
+            help=(
+                "Number of closest **training** samples used to build features "
+                f"(dX, dY, D, V per neighbor). Max **{max_n}** (training pool size − 1)."
+            ),
+        )
+        focus_xy = pool.loc[int(focus_index), ["X", "Y"]].to_numpy(dtype=float)
+        try:
+            neighbor_idx = nearest_neighbor_indices(
+                focus_xy, pool, int(n), exclude_self=True
+            )
+        except ValueError as exc:
+            st_module.warning(str(exc))
+            return int(n)
+        focus = pool.iloc[int(focus_index)]
+        st_module.caption(
+            f"Focus #{int(focus_index)}: X={int(focus.X)}, Y={int(focus.Y)}, V={int(focus.V)}"
+        )
+        n_cat = int(np.nanmax(categorized_2d)) + 1 if categorized_2d is not None else None
+        fig = neighbor_inspection_scatter(
+            pool,
+            int(focus_index),
+            neighbor_idx,
+            grid_shape=tuple(categorized_2d.shape) if categorized_2d is not None else None,
+            n_categories=n_cat,
+        )
+        st_module.plotly_chart(fig, use_container_width=True)
+        return int(n)
 
 
 def _import_tensorflow():
@@ -146,16 +216,13 @@ See the expandable specification below for the full feature definition.
         max_neighbors = max(1, len(train_pool) - 1)
         default_n = min(int(default_config.get("n_nearest", MLConfig().n_nearest)), max_neighbors)
 
-        n_nearest = st_module.number_input(
-            "Nearest neighbors (n)",
-            min_value=1,
-            max_value=max_neighbors,
-            value=default_n,
-            help=(
-                "Number of closest **training** samples used to build MONAMI features "
-                "(dX, dY, D, V per neighbor). Maximum is one less than the training pool size "
-                f"(currently **{max_neighbors}**)."
-            ),
+        n_nearest = render_neighbor_inspector(
+            st_module,
+            train_pool,
+            default_n,
+            categorized_2d,
+            key_prefix="relative",
+            max_neighbors=max_neighbors,
         )
 
         if ALGORITHM_SPEC_PATH.exists():
@@ -234,6 +301,7 @@ See the expandable specification below for the full feature definition.
         log_callback: Optional[Callable[[str], None]] = None,
         warm_start: Any = None,
         epochs_to_run: Optional[int] = None,
+        ti_samples_df: Optional[pd.DataFrame] = None,
     ) -> TrainingResult:
         from tensorflow.keras.callbacks import LambdaCallback
         from tensorflow.keras.utils import to_categorical
@@ -243,12 +311,14 @@ See the expandable specification below for the full feature definition.
         n_nearest = _n_nearest(algo_config)
         max_epochs = effective_max_epochs(ml_config)
         chunk = int(epochs_to_run) if epochs_to_run is not None else max_epochs
+        ti_n = int(len(ti_samples_df)) if ti_samples_df is not None else 0
 
         if warm_start is None:
             _training_log(
                 log_callback,
                 f"Preparing data: {len(train_df)} train / {len(test_df)} test (validation only), "
-                f"neighbor pool={len(neighbor_pool_df)} train samples, n_nearest={n_nearest}",
+                f"neighbor pool={len(neighbor_pool_df)} train samples, n_nearest={n_nearest}"
+                + (f", TI aux labels={ti_n}" if ti_n else ""),
             )
             x_train, y_train_raw, x_test, y_test_raw, _, xy_scale = build_training_matrix(
                 train_df,
@@ -256,6 +326,7 @@ See the expandable specification below for the full feature definition.
                 neighbor_pool_df,
                 n_nearest,
                 include_target_xy=self.include_target_xy,
+                ti_samples_df=ti_samples_df,
             )
             input_dim = x_train.shape[1]
             if self.include_target_xy:
